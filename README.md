@@ -16,3 +16,8 @@ If you leave the timeout value emtpy it will use the default Timeout value 5 sec
 Optional: 2 or more Usernames which are separated with a comma
 
 but the more usernames the more connections and api calls results in more Failed connection. 
+
+
+
+
+Updated with better error handling, some json validation, and an option to set a timeout
