@@ -1,10 +1,15 @@
 import httpx
 import os
 import asyncio
+import json
 from tqdm import tqdm
 
 # Prompt user for usernames
 usernames = input("Enter usernames (comma-separated): ").split(",")
+
+# Prompt user for timeout value
+timeout_input = input("Enter timeout value (in seconds): ")
+timeout = int(timeout_input) if timeout_input.isdigit() else 5
 
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
@@ -13,7 +18,7 @@ base_url = "https://civitai.com/api/v1/images"
 async def download_image(url, output_path):
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, timeout=5)  # Set a timeout for the request
+            response = await client.get(url, timeout=timeout)  # Set the timeout for the request
             response.raise_for_status()
             total_size = int(response.headers.get('content-length', 0))
             progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
@@ -40,37 +45,50 @@ async def download_images_for_username(username):
 
     while url:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-            data = response.json()
-            items = data['items']
+            try:
+                response = await client.get(url, timeout=timeout)  # Set the timeout for the request
+                if response.status_code == 200:  # Verify the response status code
+                    try:
+                        data = json.loads(response.text)  # Validate and load the response as JSON
+                    except json.JSONDecodeError as e:
+                        print(f"Invalid JSON data: {str(e)}")
+                        break  # Exit the loop if invalid JSON is encountered
 
-            # Create a folder for the username
-            user_dir = os.path.join(output_dir, username.strip())
-            os.makedirs(user_dir, exist_ok=True)
+                    items = data['items']
 
-            # Download images for each item
-            tasks = []
-            for item in items:
-                image_id = item['id']
-                image_url = item['url']
+                    # Create a folder for the username
+                    user_dir = os.path.join(output_dir, username.strip())
+                    os.makedirs(user_dir, exist_ok=True)
 
-                # Download the image (add the task to the list)
-                image_path = os.path.join(user_dir, f"{image_id}.jpeg")
-                tasks.append(download_image(image_url, image_path))
+                    # Download images for each item
+                    tasks = []
+                    for item in items:
+                        image_id = item['id']
+                        image_url = item['url']
 
-            # Wait for all image downloads to complete
-            failed_results = await asyncio.gather(*tasks)
+                        # Download the image (add the task to the list)
+                        image_path = os.path.join(user_dir, f"{image_id}.jpeg")
+                        tasks.append(download_image(image_url, image_path))
 
-            # Store the failed URLs for retry with the username and image ID
-            failed_urls.extend([(url, username.strip(), item['id']) for url, item in zip(failed_results, items) if url])
+                    # Wait for all image downloads to complete
+                    failed_results = await asyncio.gather(*tasks)
 
-            # Check if there is a next page
-            metadata = data['metadata']
-            next_page = metadata.get('nextPage')
-            if next_page:
-                url = next_page
-            else:
-                break
+                    # Store the failed URLs for retry with the username and image ID
+                    failed_urls.extend([(url, username.strip(), item['id']) for url, item in zip(failed_results, items) if url])
+
+                    # Check if there is a next page
+                    metadata = data['metadata']
+                    next_page = metadata.get('nextPage')
+                    if next_page:
+                        url = next_page
+                    else:
+                        break
+                else:
+                    print(f"Error occurred during the request: {response.status_code}")
+                    break  # Exit the loop if the request was not successful
+            except httpx.TimeoutException as e:
+                print(f"Request timed out: {str(e)}")
+                continue  # Retry the request if a timeout occurs
 
     return failed_urls
 
