@@ -10,6 +10,7 @@ pip install -r requirements.txt
 python civit_image_downloader.py  
 ```
 The script  will ask you for a username and a timeout value.
+
 If you leave the timeout value emtpy it will use the Default timeout Value 5 sec.
 
 Optional: 2 or more Usernames which are separated with a comma
