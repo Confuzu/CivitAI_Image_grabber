@@ -19,6 +19,6 @@ but the more usernames the more connections and api calls results in more Failed
 
 
 
-#Update
+# Update
 
 Updated with better error handling, some json validation, and an option to set a timeout
