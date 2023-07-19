@@ -9,7 +9,7 @@ usernames = input("Enter usernames (comma-separated): ").split(",")
 
 # Prompt user for timeout value
 timeout_input = input("Enter timeout value (in seconds): ")
-timeout = int(timeout_input) if timeout_input.isdigit() else 20
+timeout = int(timeout_input) if timeout_input.isdigit() else 10
 
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
