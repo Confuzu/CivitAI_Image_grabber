@@ -14,11 +14,15 @@ timeout = int(timeout_input) if timeout_input.isdigit() else 10
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
 
+# Directory for image downloads
+output_dir = "image_downloads"
+os.makedirs(output_dir, exist_ok=True)
+
 # Function to download an image from the provided URL
 async def download_image(url, output_path):
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, timeout=timeout)  # Set the timeout for the request
+            response = await client.get(url, timeout=timeout)
             response.raise_for_status()
             total_size = int(response.headers.get('content-length', 0))
             progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
@@ -27,88 +31,97 @@ async def download_image(url, output_path):
                     progress_bar.update(len(chunk))
                     file.write(chunk)
             progress_bar.close()
+            return True
         except (httpx.RequestError, httpx.HTTPStatusError, asyncio.TimeoutError) as e:
             # If an error occurs, print the error message and return the URL
             print(f"Error downloading image: {e}")
-            return url
+            return False
 
-# Create a directory for image downloads
-output_dir = "image_downloads"
-os.makedirs(output_dir, exist_ok=True)
+# Async function to write meta data to a text file
+async def write_meta_data(meta, output_path, image_id, username):
+    if not meta:
+        output_path = output_path.replace(".txt", "_no_meta.txt")
+        url = f"https://civitai.com/images/{image_id}?period=AllTime&periodMode=published&sort=Newest&view=feed&username={username}&withTags=false"
+        with open(output_path, "w") as file:
+            file.write(f"No meta data available for this image.\nURL: {url}\n")
+    else:
+        with open(output_path, "w") as file:
+            for key, value in meta.items():
+                file.write(f"{key}: {value}\n")
 
-# Define the async function to download images for a given username
+
+# Async function to download images for a given username
 async def download_images_for_username(username):
-    # Format the initial URL with the username
     url = f"{base_url}?username={username.strip()}"
-
-    failed_urls = []  # Store the failed URLs for retry
+    failed_urls = []
+    images_without_meta = 0
 
     while url:
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.get(url, timeout=timeout)  # Set the timeout for the request
-                if response.status_code == 200:  # Verify the response status code
+                response = await client.get(url, timeout=timeout)
+                if response.status_code == 200:
                     try:
-                        data = json.loads(response.text)  # Validate and load the response as JSON
+                        data = json.loads(response.text)
                     except json.JSONDecodeError as e:
                         print(f"Invalid JSON data: {str(e)}")
-                        break  # Exit the loop if invalid JSON is encountered
+                        break
 
                     items = data['items']
 
-                    # Create a folder for the username
                     user_dir = os.path.join(output_dir, username.strip())
                     os.makedirs(user_dir, exist_ok=True)
 
-                    # Download images for each item
                     tasks = []
+
                     for item in items:
                         image_id = item['id']
                         image_url = item['url']
-
-                        # Download the image (add the task to the list)
                         image_path = os.path.join(user_dir, f"{image_id}.jpeg")
                         tasks.append(download_image(image_url, image_path))
 
-                    # Wait for all image downloads to complete
-                    failed_results = await asyncio.gather(*tasks)
+                        meta_output_path = os.path.join(user_dir, f"{image_id}_meta.txt")
+                        await write_meta_data(item.get("meta"), meta_output_path, image_id, username)
 
-                    # Store the failed URLs for retry with the username and image ID
-                    failed_urls.extend([(url, username.strip(), item['id']) for url, item in zip(failed_results, items) if url])
+                        if not item.get("meta"):
+                            images_without_meta += 1
 
-                    # Check if there is a next page
+                    await asyncio.gather(*tasks)
+
                     metadata = data['metadata']
                     next_page = metadata.get('nextPage')
+
                     if next_page:
                         url = next_page
+                        await asyncio.sleep(3)  # Add a delay between requests
                     else:
                         break
                 else:
                     print(f"Error occurred during the request: {response.status_code}")
-                    break  # Exit the loop if the request was not successful
+                    break
             except httpx.TimeoutException as e:
                 print(f"Request timed out: {str(e)}")
-                continue  # Retry the request if a timeout occurs
+                continue
 
-    return failed_urls
+    return failed_urls, images_without_meta
 
-# Run the async functions concurrently for all usernames
+# Main async function
 async def main():
     tasks = [download_images_for_username(username.strip()) for username in usernames]
-    failed_results = await asyncio.gather(*tasks)
-    failed_urls = [url for sublist in failed_results for url in sublist]
+    results = await asyncio.gather(*tasks)
+    failed_urls = [url for sublist, _ in results for url in sublist]
+    images_without_meta = sum([count for _, count in results])
 
-    # Retry failed URLs within the respective username folders
     if failed_urls:
         print("Retrying failed URLs...")
         for url, username, image_id in failed_urls:
             user_dir = os.path.join(output_dir, username)
-            os.makedirs(user_dir, exist_ok=True)  # Create the user directory if it doesn't exist
+            os.makedirs(user_dir, exist_ok=True)
             output_path = os.path.join(user_dir, f"{image_id}.jpeg")
             await download_image(url, output_path)
 
-# Run the main async function
-asyncio.run(main())
+    if images_without_meta > 0:
+        print(f"{images_without_meta} images have no meta data.")
 
-# Print completion message
+asyncio.run(main())
 print("Image download completed successfully.")
