@@ -1,6 +1,9 @@
 # Civit Image grabber
 
-It grabs all the uploaded images from a provided Username from Civit.  
+It grabs all the uploaded images from a provided Username from Civit. Over the civitAI API 
+Should the api not spit out all the data for all images then I'm sorry 
+The script can only download where data is provided.
+
 
 # Usage 
 ```
@@ -19,6 +22,15 @@ but the more usernames the more connections and api calls results in more Failed
 
 
 
-# Update
+# Update History
 
-Updated with better error handling, some json validation, and an option to set a timeout
+0.3 Added a new Function 
+
+It is writing the Meta Data for every image into a separate text file with  the ID of the image: ID_meta.txt.
+If no Meta Data is available, the text file will have the URL to the image to check on the website.
+
+Increased the timeout 
+
+Added a delay between requests  
+    
+0.2 Updated with better error handling, some json validation and an option to set a timeout
