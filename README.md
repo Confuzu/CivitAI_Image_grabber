@@ -7,6 +7,9 @@ The script can only download where data is provided.
 
 # Usage 
 ```
+install Python3
+```
+```
 pip install -r requirements.txt
 ```
 ```
