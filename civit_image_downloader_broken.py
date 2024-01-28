@@ -5,6 +5,12 @@ import json
 from tqdm import tqdm
 import shutil
 
+
+##########################################
+# Not usefull until civitAi API fixed!#
+##########################################
+
+
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
 
