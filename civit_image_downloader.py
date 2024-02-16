@@ -7,7 +7,7 @@ import shutil
 
 
 ##########################################
-# Not usefull until civitAi API fixed!#
+# CivitAi API is fixed!#
 ##########################################
 
 
