@@ -4,6 +4,8 @@ It grabs all the uploaded images from a provided Username from Civit. Over the c
 Should the api not spit out all the data for all images then I'm sorry 
 The script can only download where data is provided.
 
+# CivitAI API is fixed
+
 # Usage 
 ```
 install Python3
