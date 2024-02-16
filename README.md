@@ -4,9 +4,6 @@ It grabs all the uploaded images from a provided Username from Civit. Over the c
 Should the api not spit out all the data for all images then I'm sorry 
 The script can only download where data is provided.
 
-# Until the CivitAI API is fixed, the current broken version only allows downloading 100 images per username or model ID. 
-# The workaround version enables downloading 200, or sometimes 300 images, until the API blocks any further requests."
-
 # Usage 
 ```
 install Python3
