@@ -14,7 +14,7 @@ install Python3
 pip install -r requirements.txt
 ```
 ```
-python civit_image_downloader_workaorund.py
+python civit_image_downloader.py
 ```
 The script  will ask you for a username and a timeout value.
 
