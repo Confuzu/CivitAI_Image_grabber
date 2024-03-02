@@ -4,10 +4,13 @@ import asyncio
 import json
 from tqdm import tqdm
 import shutil
+import re
+
 
 
 ##########################################
 # CivitAi API is fixed!#
+# civit_image_downloader_0.7
 ##########################################
 
 
@@ -19,7 +22,12 @@ output_dir = "image_downloads"
 os.makedirs(output_dir, exist_ok=True)
 
 # Function to download an image from the provided URL
-async def download_image(url, output_path, timeout_value):
+async def download_image(url, output_path, timeout_value, quality='SD'):
+    file_extension = ".png" if quality == 'HD' else ".jpeg"
+    output_path = output_path.rsplit(".", 1)[0] + file_extension
+    if quality == 'HD':
+           url = re.sub(r"width=\d{3,4}", "original=true", url)
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(url, timeout=timeout_value)
@@ -33,9 +41,10 @@ async def download_image(url, output_path, timeout_value):
             progress_bar.close()
             return True
         except (httpx.RequestError, httpx.HTTPStatusError, asyncio.TimeoutError) as e:
-            # If an error occurs, print the error message and return the URL
             print(f"Error downloading image: {e}")
             return False
+
+
 
 # Async function to write meta data to a text file
 async def write_meta_data(meta, output_path, image_id, username):
@@ -50,27 +59,29 @@ async def write_meta_data(meta, output_path, image_id, username):
                 file.write(f"{key}: {value}\n")
 
 
-TRACKING_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "downloaded_images.txt")
-
-DOWNLOADED_IMAGES = set() # Here we store the IDs of the downloaded images
+TRACKING_JSON_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "downloaded_images.json")
+downloaded_images = set() # Here we store the IDs of the downloaded images
 
 def load_downloaded_images():
-    global DOWNLOADED_IMAGES
     try:
-        with open(TRACKING_FILE, "r") as file:
-            DOWNLOADED_IMAGES = set(file.read().splitlines())
+        with open(TRACKING_JSON_FILE, "r") as file:
+            return json.load(file)
     except FileNotFoundError:
-        pass  
+        return {}
 
 
-def check_if_image_downloaded(image_id):
-    return image_id in DOWNLOADED_IMAGES
+def check_if_image_downloaded(image_id, quality='SD'):
+    downloaded_images = load_downloaded_images()
+    image_key = f"{image_id}_{quality}"
+    return image_key in downloaded_images
 
 
-def mark_image_as_downloaded(image_id):
-    """Mark the image with the given ID as downloaded by adding its ID to the tracking file."""
-    with open(TRACKING_FILE, "a") as file:
-        file.write(image_id + "\n")
+def mark_image_as_downloaded(image_id, image_path, quality='SD'):
+    downloaded_images = load_downloaded_images()
+    image_key = f"{image_id}_{quality}"
+    downloaded_images[image_key] = {"path": image_path, "quality": quality, "download_date": "2024-03-02"}
+    with open(TRACKING_JSON_FILE, "w") as file:
+        json.dump(downloaded_images, file, indent=4)
 
 NEW_IMAGES_DOWNLOADED = False
 
@@ -147,7 +158,7 @@ def sort_images_by_model_name(model_dir):
         print(f"No images found in {model_dir}. Skipping sorting.")    
 
 # Async function to download images for a given Model ID
-async def download_images_for_model(model_id, timeout_value):
+async def download_images_for_model(model_id, timeout_value, quality='SD'):
     global NEW_IMAGES_DOWNLOADED
     url = f"{base_url}?modelId={str(model_id)}"
     failed_urls = []
@@ -178,11 +189,12 @@ async def download_images_for_model(model_id, timeout_value):
                     for item in items:
                         image_id = item['id']
                         image_url = item['url']
-                        image_path = os.path.join(model_dir, f"{image_id}.jpeg")
+                        image_extension = ".png" if quality == 'HD' else ".jpeg"
+                        image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
                         
                         # Check if the image has already been downloaded
-                        if not check_if_image_downloaded(str(image_id)):
-                            task = download_image(image_url, image_path, timeout_value)
+                        if not check_if_image_downloaded(str(image_id), quality):
+                            task = download_image(image_url, image_path, timeout_value, quality)
                             tasks.append(task)
 
                     # This will run all download tasks asynchronously
@@ -193,7 +205,8 @@ async def download_images_for_model(model_id, timeout_value):
                         image_id = items[idx]['id']
                         if download_success:
                             NEW_IMAGES_DOWNLOADED = True
-                            mark_image_as_downloaded(str(image_id))
+                            image_path = os.path.join(model_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
+                            mark_image_as_downloaded(str(image_id), image_path, quality)
 
                         meta_output_path = os.path.join(model_dir, f"{image_id}_meta.txt")
                         await write_meta_data(item.get("meta"), meta_output_path, image_id, item.get('username', 'unknown'))
@@ -219,7 +232,7 @@ async def download_images_for_model(model_id, timeout_value):
     return failed_urls, images_without_meta
 
 # Async function to download images for a given username
-async def download_images_for_username(username, timeout_value):
+async def download_images_for_username(username, timeout_value, quality='SD'):
     global NEW_IMAGES_DOWNLOADED
     url = f"{base_url}?username={username.strip()}"
     failed_urls = []
@@ -246,10 +259,11 @@ async def download_images_for_username(username, timeout_value):
                     for item in items:
                         image_id = item['id']
                         image_url = item['url']
-                        image_path = os.path.join(user_dir, f"{image_id}.jpeg")
+                        image_extension = ".png" if quality == 'HD' else ".jpeg"
+                        image_path = os.path.join(user_dir, f"{image_id}{image_extension}")
                         # Check if the image has already been downloaded
-                        if not check_if_image_downloaded(str(image_id)):
-                            task = download_image(image_url, image_path, timeout_value)
+                        if not check_if_image_downloaded(str(image_id), quality):
+                            task = download_image(image_url, image_path, timeout_value, quality)
                             tasks.append(task)
 
                     # This will run all download tasks asynchronously
@@ -260,7 +274,8 @@ async def download_images_for_username(username, timeout_value):
                         image_id = items[idx]['id']
                         if download_success:
                             NEW_IMAGES_DOWNLOADED = True
-                            mark_image_as_downloaded(str(image_id))
+                            image_path = os.path.join(user_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
+                            mark_image_as_downloaded(str(image_id), image_path, quality)
 
                         meta_output_path = os.path.join(user_dir, f"{image_id}_meta.txt")
                         await write_meta_data(item.get("meta"), meta_output_path, image_id, username)
@@ -295,12 +310,18 @@ async def main():
     timeout_input = input("Enter timeout value (in seconds): ")
     timeout_value = int(timeout_input) if timeout_input.isdigit() else 20
 
+# Prompt user for Image Quality
+    quality_choice = input("Choose image quality (1 for SD, 2 for HD): ")
+    quality = 'HD' if quality_choice == '2' else 'SD'
+    
     if choice == "1":
         usernames = input("Enter usernames (comma-separated): ").split(",")
-        tasks = [download_images_for_username(username.strip(), timeout_value) for username in usernames]
+        tasks = [download_images_for_username(username.strip(), timeout_value, quality) for username in usernames]
+        
     elif choice == "2":
         model_ids = input("Enter model IDs (comma-separated): ").split(",")
-        tasks = [download_images_for_model(model_id.strip(), timeout_value) for model_id in model_ids]
+        tasks = [download_images_for_model(model_id.strip(), timeout_value, quality) for model_id in model_ids]
+        
     else:
         print("Invalid choice!")
         return
