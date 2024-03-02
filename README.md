@@ -16,9 +16,14 @@ pip install -r requirements.txt
 ```
 python civit_image_downloader.py
 ```
-The script  will ask you for a username and a timeout value.
+The script  will ask you to 
 
-If you leave the timeout value emtpy it will use the default Timeout value 5 sec.
+                        Choose mode (1 for username, 2 for model ID): 
+                        timeout value (in seconds):
+                        image quality (1 for SD, 2 for HD):
+                        usernames (comma-separated):
+
+If you leave the timeout value emtpy it will use the default Timeout value 20 sec.
 
 Optional: 2 or more Usernames which are separated with a comma
 
@@ -27,6 +32,29 @@ but the more usernames the more connections and api calls results in more Failed
 
 
 # Update History
+
+0.5 New Features 
+
+Option for Downloading SD (jpeg) Low Quality or HD (PNG) High Quality Version of Images
+
+
+Better Tracking of images that already downloaded, with a JSON File called downloaded_images.json in the same Folder as the script. The Scripts writes 
+for SD Images with jpeg Ending
+```
+        "ImageID_SD": 
+        "path": "image_downloads/civitAIuser/image.jpeg",
+        "quality": "SD",
+        "download_date": "YYYY-MM-DD"       
+```
+For HD Images with PNG Ending
+```
+        "ImageID_HD": {
+        "path": "image_downloads/civitAIuser/Image.png",
+        "quality": "HD",
+        "download_date": "YYYY-MM-DD"
+```
+into it and checks before Downloading a Image. For Both Option, Model ID or Username
+
 
 0.4 Added new Functions
 
