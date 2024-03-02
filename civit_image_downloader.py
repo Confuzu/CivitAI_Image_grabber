@@ -10,7 +10,7 @@ import re
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_0.7
+# civit_image_downloader_0.5
 ##########################################
 
 
