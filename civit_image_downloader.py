@@ -82,7 +82,7 @@ def check_if_image_downloaded(image_id, quality='SD'):
 def mark_image_as_downloaded(image_id, image_path, quality='SD'):
     downloaded_images = load_downloaded_images()
     image_key = f"{image_id}_{quality}"
-    current_date = datetime.now().strftime("%Y-%m-%d - %H-%M") 
+    current_date = datetime.now().strftime("%Y-%m-%d - %H:%M") 
     downloaded_images[image_key] = {"path": image_path, "quality": quality, "download_date": current_date}
     with open(TRACKING_JSON_FILE, "w") as file:
         json.dump(downloaded_images, file, indent=4)
