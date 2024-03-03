@@ -33,6 +33,12 @@ but the more usernames the more connections and api calls results in more Failed
 
 # Update History
 
+
+0.6
+
+Rate Limiting to to 20 simultaneous connections. 
+Bug fixing
+
 0.5 New Features 
 
 Option for Downloading SD (jpeg) Low Quality or HD (PNG) High Quality Version of Images
