@@ -34,10 +34,11 @@ but the more usernames the more connections and api calls results in more Failed
 # Update History
 
 
-0.6
+0.6 New Function
 
-Rate Limiting to to 20 simultaneous connections. 
-Bug fixing
+Rate Limiting set to 20 simultaneous connections. 
+Download Date Format changend in the JSON Tracking File 
+
 
 0.5 New Features 
 
@@ -50,14 +51,14 @@ for SD Images with jpeg Ending
         "ImageID_SD": 
         "path": "image_downloads/civitAIuser/image.jpeg",
         "quality": "SD",
-        "download_date": "YYYY-MM-DD"       
+        "download_date": "YYYY-MM-DD - H:M"       
 ```
 For HD Images with PNG Ending
 ```
         "ImageID_HD": {
         "path": "image_downloads/civitAIuser/Image.png",
         "quality": "HD",
-        "download_date": "YYYY-MM-DD"
+        "download_date": "YYYY-MM-DD- H:M"
 ```
 into it and checks before Downloading a Image. For Both Option, Model ID or Username
 
