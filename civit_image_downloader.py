@@ -5,12 +5,13 @@ import json
 from tqdm import tqdm
 import shutil
 import re
+from datetime import datetime
 
 
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_0.5
+# civit_image_downloader_0.6
 ##########################################
 
 
@@ -21,28 +22,30 @@ base_url = "https://civitai.com/api/v1/images"
 output_dir = "image_downloads"
 os.makedirs(output_dir, exist_ok=True)
 
+semaphore = asyncio.Semaphore(20)
+
 # Function to download an image from the provided URL
 async def download_image(url, output_path, timeout_value, quality='SD'):
     file_extension = ".png" if quality == 'HD' else ".jpeg"
     output_path = output_path.rsplit(".", 1)[0] + file_extension
     if quality == 'HD':
            url = re.sub(r"width=\d{3,4}", "original=true", url)
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(url, timeout=timeout_value)
-            response.raise_for_status()
-            total_size = int(response.headers.get('content-length', 0))
-            progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
-            with open(output_path, "wb") as file:
-                async for chunk in response.aiter_bytes():
-                    progress_bar.update(len(chunk))
-                    file.write(chunk)
-            progress_bar.close()
-            return True
-        except (httpx.RequestError, httpx.HTTPStatusError, asyncio.TimeoutError) as e:
-            print(f"Error downloading image: {e}")
-            return False
+    async with semaphore:
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(url, timeout=timeout_value)
+                response.raise_for_status()
+                total_size = int(response.headers.get('content-length', 0))
+                progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
+                with open(output_path, "wb") as file:
+                    async for chunk in response.aiter_bytes():
+                        progress_bar.update(len(chunk))
+                        file.write(chunk)
+                progress_bar.close()
+                return True
+            except (httpx.RequestError, httpx.HTTPStatusError, asyncio.TimeoutError) as e:
+                print(f"Error downloading image: {e}")
+                return False
 
 
 
@@ -79,7 +82,8 @@ def check_if_image_downloaded(image_id, quality='SD'):
 def mark_image_as_downloaded(image_id, image_path, quality='SD'):
     downloaded_images = load_downloaded_images()
     image_key = f"{image_id}_{quality}"
-    downloaded_images[image_key] = {"path": image_path, "quality": quality, "download_date": "2024-03-02"}
+    current_date = datetime.now().strftime("%Y-%m-%d - %H-%M") 
+    downloaded_images[image_key] = {"path": image_path, "quality": quality, "download_date": current_date}
     with open(TRACKING_JSON_FILE, "w") as file:
         json.dump(downloaded_images, file, indent=4)
 
@@ -108,6 +112,7 @@ def clear_source_directory(model_dir):
             os.remove(file_path)
         except Exception as e:
             print(f"Failed to remove file {file_path}. Error: {e}")
+
 
 
 def sort_images_by_model_name(model_dir):
@@ -157,6 +162,9 @@ def sort_images_by_model_name(model_dir):
     else:
         print(f"No images found in {model_dir}. Skipping sorting.")    
 
+
+visited_pages = set()
+
 # Async function to download images for a given Model ID
 async def download_images_for_model(model_id, timeout_value, quality='SD'):
     global NEW_IMAGES_DOWNLOADED
@@ -165,71 +173,78 @@ async def download_images_for_model(model_id, timeout_value, quality='SD'):
     images_without_meta = 0
 
     while url:
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.get(url, timeout=timeout_value)
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                    except json.JSONDecodeError as e:
-                        print(f"Invalid JSON data: {str(e)}")
-                        break
-                        
-                    items = data.get('items', [])
-                    
-                    # Create directory for model ID
-                    model_name = "unknown_model"
-                    if items and isinstance(items[0], dict):
-                        model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
+        if url in visited_pages:
+            print(f"URL {url} already visited. Ending loop.")
+            break 
+        visited_pages.add(url)
 
-                    model_dir = os.path.join(output_dir, f"model_{model_id}_{model_name}")
-                    os.makedirs(model_dir, exist_ok=True)
+        async with semaphore:
+            async with httpx.AsyncClient() as client:
+                try:
+                    response = await client.get(url, timeout=timeout_value)
+                    if response.status_code == 200:
+                        try:
+                            data = response.json()
+                        except json.JSONDecodeError as e:
+                            print(f"Invalid JSON data: {str(e)}")
+                            break
 
-                    tasks = []
-                    for item in items:
-                        image_id = item['id']
-                        image_url = item['url']
-                        image_extension = ".png" if quality == 'HD' else ".jpeg"
-                        image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
-                        
-                        # Check if the image has already been downloaded
-                        if not check_if_image_downloaded(str(image_id), quality):
-                            task = download_image(image_url, image_path, timeout_value, quality)
-                            tasks.append(task)
+                        items = data.get('items', [])
 
-                    # This will run all download tasks asynchronously
-                    download_results = await asyncio.gather(*tasks)
+                        # Create directory for model ID
+                        model_name = "unknown_model"
+                        if items and isinstance(items[0], dict):
+                            model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
 
-                    # Check the results and mark the downloaded images
-                    for idx, download_success in enumerate(download_results):
-                        image_id = items[idx]['id']
-                        if download_success:
-                            NEW_IMAGES_DOWNLOADED = True
-                            image_path = os.path.join(model_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
-                            mark_image_as_downloaded(str(image_id), image_path, quality)
+                        model_dir = os.path.join(output_dir, f"model_{model_id}_{model_name}")
+                        os.makedirs(model_dir, exist_ok=True)
 
-                        meta_output_path = os.path.join(model_dir, f"{image_id}_meta.txt")
-                        await write_meta_data(item.get("meta"), meta_output_path, image_id, item.get('username', 'unknown'))
+                        tasks = []
+                        for item in items:
+                            image_id = item['id']
+                            image_url = item['url']
+                            image_extension = ".png" if quality == 'HD' else ".jpeg"
+                            image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
 
-                        if not item.get("meta"):
-                            images_without_meta += 1
+                            # Check if the image has already been downloaded
+                            if not check_if_image_downloaded(str(image_id), quality):
+                                task = download_image(image_url, image_path, timeout_value, quality)
+                                tasks.append(task)
 
-                    metadata = data['metadata']
-                    next_page = metadata.get('nextPage')
+                        # This will run all download tasks asynchronously
+                        download_results = await asyncio.gather(*tasks)
 
-                    if next_page:
-                        url = next_page
-                        await asyncio.sleep(3)  # Add a delay between requests
-                    else:
-                        break
-            except httpx.TimeoutException as e:
-                print(f"Request timed out: {str(e)}")
-                continue
+                        # Check the results and mark the downloaded images
+                        for idx, download_success in enumerate(download_results):
+                            image_id = items[idx]['id']
+                            if download_success:
+                                NEW_IMAGES_DOWNLOADED = True
+                                image_path = os.path.join(model_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
+                                mark_image_as_downloaded(str(image_id), image_path, quality)
+
+                            meta_output_path = os.path.join(model_dir, f"{image_id}_meta.txt")
+                            await write_meta_data(item.get("meta"), meta_output_path, image_id, item.get('username', 'unknown'))
+
+                            if not item.get("meta"):
+                                images_without_meta += 1
+
+                        metadata = data['metadata']
+                        next_page = metadata.get('nextPage')
+
+                        if next_page:
+                            url = next_page
+                            await asyncio.sleep(3)  # Add a delay between requests
+                        else:
+                            break
+                except httpx.TimeoutException as e:
+                    print(f"Request timed out: {str(e)}")
+                    continue
 
     # Sorting the images by model name after downloading them
     sort_images_by_model_name(model_dir)
 
     return failed_urls, images_without_meta
+
 
 # Async function to download images for a given username
 async def download_images_for_username(username, timeout_value, quality='SD'):
@@ -239,64 +254,70 @@ async def download_images_for_username(username, timeout_value, quality='SD'):
     images_without_meta = 0
 
     while url:
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.get(url, timeout=timeout_value)
-                if response.status_code == 200:
-                    try:
-                        data = json.loads(response.text)
-                    except json.JSONDecodeError as e:
-                        print(f"Invalid JSON data: {str(e)}")
-                        break
+        if url in visited_pages:
+            print(f"URL {url} already visited. Ending loop.")
+            break 
+        visited_pages.add(url)
 
-                    items = data['items']
+        async with semaphore:
+            async with httpx.AsyncClient() as client:
+                try:
+                    response = await client.get(url, timeout=timeout_value)
+                    if response.status_code == 200:
+                        try:
+                            data = json.loads(response.text)
+                        except json.JSONDecodeError as e:
+                            print(f"Invalid JSON data: {str(e)}")
+                            break
 
-                    user_dir = os.path.join(output_dir, username.strip())
-                    os.makedirs(user_dir, exist_ok=True)
+                        items = data['items']
 
-                    tasks = []
+                        user_dir = os.path.join(output_dir, username.strip())
+                        os.makedirs(user_dir, exist_ok=True)
 
-                    for item in items:
-                        image_id = item['id']
-                        image_url = item['url']
-                        image_extension = ".png" if quality == 'HD' else ".jpeg"
-                        image_path = os.path.join(user_dir, f"{image_id}{image_extension}")
-                        # Check if the image has already been downloaded
-                        if not check_if_image_downloaded(str(image_id), quality):
-                            task = download_image(image_url, image_path, timeout_value, quality)
-                            tasks.append(task)
+                        tasks = []
 
-                    # This will run all download tasks asynchronously
-                    download_results = await asyncio.gather(*tasks)
+                        for item in items:
+                            image_id = item['id']
+                            image_url = item['url']
+                            image_extension = ".png" if quality == 'HD' else ".jpeg"
+                            image_path = os.path.join(user_dir, f"{image_id}{image_extension}")
+                            # Check if the image has already been downloaded
+                            if not check_if_image_downloaded(str(image_id), quality):
+                                task = download_image(image_url, image_path, timeout_value, quality)
+                                tasks.append(task)
 
-                    # Check the results and mark the downloaded images
-                    for idx, download_success in enumerate(download_results):
-                        image_id = items[idx]['id']
-                        if download_success:
-                            NEW_IMAGES_DOWNLOADED = True
-                            image_path = os.path.join(user_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
-                            mark_image_as_downloaded(str(image_id), image_path, quality)
+                        # This will run all download tasks asynchronously
+                        download_results = await asyncio.gather(*tasks)
 
-                        meta_output_path = os.path.join(user_dir, f"{image_id}_meta.txt")
-                        await write_meta_data(item.get("meta"), meta_output_path, image_id, username)
+                        # Check the results and mark the downloaded images
+                        for idx, download_success in enumerate(download_results):
+                            image_id = items[idx]['id']
+                            if download_success:
+                                NEW_IMAGES_DOWNLOADED = True
+                                image_path = os.path.join(user_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
+                                mark_image_as_downloaded(str(image_id), image_path, quality)
 
-                        if not item.get("meta"):
-                            images_without_meta += 1
+                            meta_output_path = os.path.join(user_dir, f"{image_id}_meta.txt")
+                            await write_meta_data(item.get("meta"), meta_output_path, image_id, username)
 
-                    metadata = data['metadata']
-                    next_page = metadata.get('nextPage')
+                            if not item.get("meta"):
+                                images_without_meta += 1
 
-                    if next_page:
-                        url = next_page
-                        await asyncio.sleep(3)  # Add a delay between requests
+                        metadata = data['metadata']
+                        next_page = metadata.get('nextPage')
+
+                        if next_page:
+                            url = next_page
+                            await asyncio.sleep(3)  # Add a delay between requests
+                        else:
+                            break
                     else:
+                        print(f"Error occurred during the request: {response.status_code}")
                         break
-                else:
-                    print(f"Error occurred during the request: {response.status_code}")
-                    break
-            except httpx.TimeoutException as e:
-                print(f"Request timed out: {str(e)}")
-                continue
+                except httpx.TimeoutException as e:
+                    print(f"Request timed out: {str(e)}")
+                    continue
 
     return failed_urls, images_without_meta
 
@@ -331,13 +352,15 @@ async def main():
     results = await asyncio.gather(*tasks)
     failed_urls = [url for sublist, _ in results for url in sublist]
     images_without_meta = sum([count for _, count in results])
-
+    
+    
+    
     if failed_urls:
         print("Retrying failed URLs...")
         for url, id_or_username, image_id in failed_urls:
             dir_name = os.path.join(output_dir, id_or_username)
             os.makedirs(dir_name, exist_ok=True)
-            output_path = os.path.join(dir_name, f"{image_id}.jpeg")
+            output_path = os.path.join(dir_name, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
             await download_image(url, output_path)
 
     if images_without_meta > 0:
