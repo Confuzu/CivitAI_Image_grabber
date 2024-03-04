@@ -1,7 +1,7 @@
 # Civit Image grabber
 
-It grabs all the uploaded images from a provided Username from Civit. Over the civitAI API 
-Should the api not spit out all the data for all images then I'm sorry 
+It downloads all the images from a provided Username or Model ID from CivitAI. 
+Should the API not spit out all the data for all images then I'm sorry. 
 The script can only download where data is provided.
 
 # CivitAI API is fixed
