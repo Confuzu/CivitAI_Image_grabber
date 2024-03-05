@@ -3,6 +3,7 @@
 It downloads all the images from a provided Username or Model ID from CivitAI. 
 Should the API not spit out all the data for all images then I'm sorry. 
 The script can only download where data is provided.
+
 The images are Downloaded into a folder with the name of the user or the ModelID.
 
 
