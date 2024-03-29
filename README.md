@@ -1,6 +1,6 @@
 # Civit Image grabber
 
-It downloads all the images from a provided Username, Model ID or TAG from CivitAI. 
+It downloads all the images from a provided Username, Model ID or Model TAG from CivitAI. 
 Should the API not spit out all the data for all images then I'm sorry. 
 The script can only download where data is provided.
 
@@ -43,7 +43,7 @@ Optional: 2 or more Items which are separated with a comma
 
 Features: <br /> 
 
-Tag Based Image download in SD or HD with Prompt Check Yes or NO <br /> 
+Model Tag Based Image download in SD or HD with Prompt Check Yes or NO <br /> 
 Prompt Check YES means when the TAG is also present in the Prompt, then the image will be Downloaded. Otherwise it will be skipped.<br /> 
 Prompt Check NO all Images with the searched TAG will be Downloaded. But the chance for unrelated Images is higher.<br /> 
 
