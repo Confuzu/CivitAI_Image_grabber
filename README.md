@@ -47,15 +47,15 @@ Tag Based Image download in SD or HD with Prompt Check Yes or NO <br />
 Prompt Check YES means when the TAG is also present in the Prompt, then the image will be Downloaded. Otherwise it will be skipped.<br /> 
 Prompt Check NO all Images with the searched TAG will be Downloaded. But the chance for unrelated Images is higher.<br /> 
 
-CSV File creation with in Option 3 TAG Seach  
-the csv file will contain the image data that, according to the JSON file, has already been downloaded under a different TAG in this format: <br />
-"Current Tag,Previously Downloaded Tag,Image Path,Download URL"  
+CSV File creation within Option 3 TAG Seach  
+The csv file will contain the image data that, according to the JSON file, has already been downloaded under a different TAG in this format: <br />
+"Current Tag,Previously Downloaded Tag,Image Path,Download URL"  <br /> 
 
-Litte Statistc how many images have just been downloaded and skipped with reasons.
+Litte Statistc how many images have just been downloaded and skipped with a why reasons.
 
 Updates: <br /> 
 
-Use of Multiple Entrys in all 3 Option comma-separated <br /> 
+Use of Multiple Entrys in all 3 Options comma-separated <br /> 
 
 New Folder Structure for Downloaded Images in all Options First Folder is named after what you searched Username, ModelID, TAG. 
 Second is the Model that was used to generate the image
