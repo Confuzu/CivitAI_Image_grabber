@@ -39,6 +39,12 @@ Optional: 2 or more Items which are separated with a comma
 
 # Update History
 
+## 0.8 Helper script
+
+tagnames.py just launch it and it creates a txt File with all the Tags that the API gives out for the Model TAG search Option 3  <br />
+But there are some entrys that are cleary not working. I dont kow why they are in the API Answer.  <br />
+It has an function to add only new TAGS to he txt File if you run it again. 
+
 ## 0.7 Features Updates Performance 
 
 Features: <br /> 
