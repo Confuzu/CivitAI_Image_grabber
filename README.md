@@ -1,10 +1,11 @@
 # Civit Image grabber
 
-It downloads all the images from a provided Username or Model ID from CivitAI. 
+It downloads all the images from a provided Username, Model ID or TAG from CivitAI. 
 Should the API not spit out all the data for all images then I'm sorry. 
 The script can only download where data is provided.
 
-The images are Downloaded into a folder with the name of the user or the ModelID.
+The images are Downloaded into a folder with the name of the user, ModelID or the TAG <br /> 
+Second Level is the Model Name with which the image was generated.
 
 
 # CivitAI API is fixed
@@ -21,29 +22,59 @@ python civit_image_downloader.py
 ```
 The script  will ask you to 
 
-                        Choose mode (1 for username, 2 for model ID): 
-                        timeout value (in seconds):
-                        image quality (1 for SD, 2 for HD):
-                        usernames (comma-separated):
+          Enter timeout value (in seconds): 
+          Choose image quality (1 for SD, 2 for HD): 
+          Choose mode (1 for username, 2 for model ID, 3 for tag search): 
+          Mode 3 
+          Enter tags (comma-separated): TAG
+          Disable prompt check? (y/n):
 
-If you leave the timeout value emtpy it will use the default Timeout value 20 sec.
+                        
+If you leave the timeout value emtpy it will use the default Timeout value 20 sec. <br /> 
+If you leave the image quality value emtpy it will use the default image quality Value SD.
 
-Optional: 2 or more Usernames which are separated with a comma
-
-but the more usernames the more connections and api calls results in more Failed connection. 
+Optional: 2 or more Items which are separated with a comma
 
 
 
 # Update History
 
+## 0.7 Features Updates Performance 
 
-0.6 New Function
+Features: <br /> 
+
+Tag Based Image download in SD or HD with Prompt Check Yes or NO <br /> 
+Prompt Check YES means when the TAG is also present in the Prompt, then the image will be Downloaded. Otherwise it will be skipped.<br /> 
+Prompt Check NO all Images with the searched TAG will be Downloaded. But the chance for unrelated Images is higher.<br /> 
+
+CSV File creation with in Option 3 TAG Seach  
+the csv file will contain the image data that, according to the JSON file, has already been downloaded under a different TAG in this format: <br />
+"Current Tag,Previously Downloaded Tag,Image Path,Download URL"  
+
+Litte Statistc how many images have just been downloaded and skipped with reasons.
+
+Updates: <br /> 
+
+Use of Multiple Entrys in all 3 Option comma-separated <br /> 
+
+New Folder Structure for Downloaded Images in all Options First Folder is named after what you searched Username, ModelID, TAG. 
+Second is the Model that was used to generate the image
+
+![Untitled](https://github.com/Confuzu/CivitAI_Image_grabber/assets/133601702/fe49eb95-f1bc-4d96-80b6-c165d76d29e5)
+
+Performance:
+
+Code optimizations now the script runs smoother and faster. <br /> 
+Better Error Handling for some Cases <br /> 
+
+
+## 0.6 New Function
 
 Rate Limiting set to 20 simultaneous connections. 
 Download Date Format changend in the JSON Tracking File 
 
 
-0.5 New Features 
+## 0.5 New Features 
 
 Option for Downloading SD (jpeg) Low Quality or HD (PNG) High Quality Version of Images
 
@@ -66,7 +97,7 @@ For HD Images with PNG Ending
 into it and checks before Downloading a Image. For Both Option, Model ID or Username
 
 
-0.4 Added new Functions
+## 0.4 Added new Functions
 
 Image Download with Model ID. Idea for it came from bbdbby 
 The outcome looks sometimes chaotic a lot of folders with Modelnames you cant find on CivitAI. 
@@ -84,7 +115,7 @@ For Both Option, Model ID or Username
 
 Increased the timeout to 20
 
-0.3 Added a new Function
+## 0.3 Added a new Function
 
 It is writing the Meta Data for every image into a separate text file with  the ID of the image: ID_meta.txt.
 If no Meta Data is available, the text file will have the URL to the image to check on the website.
@@ -93,4 +124,4 @@ Increased the timeout to 10
 
 Added a delay between requests  
     
-0.2 Updated with better error handling, some json validation and an option to set a timeout
+## 0.2 Updated with better error handling, some json validation and an option to set a timeout
