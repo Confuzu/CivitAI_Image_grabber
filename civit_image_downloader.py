@@ -566,7 +566,7 @@ async def main():
         images_without_meta = 0
 
         # Extended choice options including tag search
-        choice = input("Choose mode (1 for username, 2 for model ID, 3 for tag search): ")
+        choice = input("Choose mode (1 for username, 2 for model ID, 3 for Model tag search): ")
         tasks = []
 
         if choice == "3":
