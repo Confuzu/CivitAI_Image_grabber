@@ -241,7 +241,7 @@ visited_pages = set()
 
 
 async def search_models_by_tag(tag, failed_search_requests=[]):
-    base_url = f"https://civitai.com/api/v1/models?tag={tag}"
+    base_url = f"https://civitai.com/api/v1/models?tag={tag}&nsfw=true"
     model_id = set()
     async with httpx.AsyncClient() as client:
         async with semaphore:
@@ -285,7 +285,7 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
         tag_to_check = tag_dir_name
 
     for model_id in model_ids:
-        url = f"{base_url}?modelId={str(model_id)}"
+        url = f"{base_url}?modelId={str(model_id)}&nsfw=X"
         visited_pages = set()  # Reset the visited_pages set for each model
 
         while url:
@@ -434,9 +434,9 @@ def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
 async def download_images(identifier, identifier_type, timeout_value, quality='SD'):
     global NEW_IMAGES_DOWNLOADED
     if identifier_type == 'model':
-        url = f"{base_url}?modelId={str(identifier)}"
+        url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
     elif identifier_type == 'username':
-        url = f"{base_url}?username={identifier.strip()}"
+        url = f"{base_url}?username={identifier.strip()}&nsfw=X"
     else:
         raise ValueError("Invalid identifier_type. Should be 'model' or 'username'.")
 
