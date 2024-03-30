@@ -186,7 +186,7 @@ def sort_images_by_model_name(model_dir):
         known_meta_files = list(set(meta_files) - set(unknown_meta_files))
 
         for meta_file in known_meta_files:
-            with open(os.path.join(model_dir, meta_file), 'r') as file:
+            with open(os.path.join(model_dir, meta_file), 'r', encoding='utf-8') as file:
                 lines = file.readlines()
                 model_name = None
 
