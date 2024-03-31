@@ -131,20 +131,26 @@ def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=
             json.dump(downloaded_images, file, indent=4)
 
 
+SOURCE_MISSING_MESSAGE_SHOWN = False
 NEW_IMAGES_DOWNLOADED = False
 
+# Anpassung der manual_copy Funktion
 def manual_copy(src, dst):
-    global SOURCE_MISSING_MESSAGE_SHOWN
-    # Check if the source file exists
+    global SOURCE_MISSING_MESSAGE_SHOWN, NEW_IMAGES_DOWNLOADED
+    # Überprüfung, ob die Quelldatei existiert
     if os.path.exists(src):
         try:
-            shutil.copy2(src, dst)  # Copy file preserving file metadata
+            shutil.copy2(src, dst)  # Kopiert die Datei und behält die Metadaten bei
+            NEW_IMAGES_DOWNLOADED = True
+            return True, dst  # Gibt True zurück, wenn das Kopieren erfolgreich war
         except Exception as e:
-            if NEW_IMAGES_DOWNLOADED:
-                print(f"Failed to copy file {src} to {dst}. Error: {e}")
-            elif not SOURCE_MISSING_MESSAGE_SHOWN:
-                print(f"Source file {src} does not exist. Skipping copy.")
-                SOURCE_MISSING_MESSAGE_SHOWN = True
+            print(f"Fehler beim Kopieren der Datei {src} nach {dst}. Fehler: {e}")
+            return False  # Gibt False zurück, wenn ein Fehler aufgetreten ist
+    else:
+        if not SOURCE_MISSING_MESSAGE_SHOWN:
+            print(f"Quelldatei {src} existiert nicht. Kopieren übersprungen.")
+            SOURCE_MISSING_MESSAGE_SHOWN = True
+        return False  # Gibt auch False zurück, wenn die Quelldatei nicht existiert
 
 
 ##Remove images and metadata files from the source directory.
@@ -177,67 +183,75 @@ def shorten_path_name(path, max_length=120):
     return os.path.join(dir_name, file_name)
 
 
+def move_to_invalid_meta(src, model_dir):
+    invalid_meta_dir = os.path.join(model_dir, 'invalid_meta')
+    os.makedirs(invalid_meta_dir, exist_ok=True)
+    new_dst = os.path.join(invalid_meta_dir, os.path.basename(src))
+    try:
+        shutil.move(src, new_dst)
+    except Exception as e:
+        print(f"Error moving the file {src} to the 'invalid_meta' folder. Error: {e}")
+    return new_dst
+
+        
+
 def sort_images_by_model_name(model_dir):
+    global NEW_IMAGES_DOWNLOADED
     if os.path.exists(model_dir) and os.listdir(model_dir):
-        # List all meta files in the directory
+        # Liste alle Meta-Dateien im Verzeichnis auf
         meta_files = [f for f in os.listdir(model_dir) if f.endswith('_meta.txt')]
-
-        unknown_meta_files = [f for f in meta_files if "no_meta" in f]
-        known_meta_files = list(set(meta_files) - set(unknown_meta_files))
-
-        for meta_file in known_meta_files:
+        
+        # Behandle Dateien mit und ohne gültige Metadaten separat
+        for meta_file in meta_files:
+            model_name_found = False
             with open(os.path.join(model_dir, meta_file), 'r', encoding='utf-8') as file:
-                lines = file.readlines()
-                model_name = None
-
-                # Extract model name from metadata
-                for line in lines:
+                for line in file:
                     if "Model:" in line:
                         model_name = line.split(":")[1].strip()
+                        model_name_found = True
                         break
                     
-                # If model name is found, copy the image and its metadata to a subdirectory
-                if model_name:
-                    target_dir = os.path.join(model_dir, model_name)
-                    target_dir = shorten_path_name(target_dir)  # Shorten the path name
-                    os.makedirs(target_dir, exist_ok=True)
-
-                    # Check whether the file with .jpeg or .png exists
-                    base_image_name = meta_file.replace('_meta.txt', '')
-                    jpeg_image_path = os.path.join(model_dir, base_image_name + '.jpeg')
-                    png_image_path = os.path.join(model_dir, base_image_name + '.png')
-                    
-                    if os.path.exists(jpeg_image_path):
-                        image_name = base_image_name + '.jpeg'
-                    elif os.path.exists(png_image_path):
-                        image_name = base_image_name + '.png'
-                    else:
-                        print(f"No image file found for: {meta_file}")
-                        continue  # If no image file was found, continue with the next metafile
-                    
-                    manual_copy(os.path.join(model_dir, image_name), os.path.join(target_dir, image_name))
-
-                    # Copy the metadata file
-                    manual_copy(os.path.join(model_dir, meta_file), os.path.join(target_dir, meta_file))
-
-        # Move 'no meta' files and their images to 'unknown_meta' directory
-        unknown_meta_dir = os.path.join(model_dir, 'unknown_meta')
-        os.makedirs(unknown_meta_dir, exist_ok=True)
-        for meta_file in unknown_meta_files:
-            # Copy the 'no meta' file
-            manual_copy(os.path.join(model_dir, meta_file), os.path.join(unknown_meta_dir, meta_file))
-
-            # Copy the associated image (correcting the image file name)
-            image_name = meta_file.replace('_meta_no_meta.txt', '.jpeg')
-            manual_copy(os.path.join(model_dir, image_name), os.path.join(unknown_meta_dir, image_name))
-
-        #Clear the source directory
+            if model_name_found:
+                target_dir = os.path.join(model_dir, model_name)
+                os.makedirs(target_dir, exist_ok=True)
+                process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
+            else:
+                # Wenn kein Modellname gefunden wurde oder die Metadaten ungültig sind
+                process_image_and_meta(model_dir, meta_file, model_dir, valid_meta=False)
+        
         clear_source_directory(model_dir)
-    else:
-        print(f"No images found in {model_dir}. Skipping sorting.")    
+        # Setze NEW_IMAGES_DOWNLOADED auf True, wenn neue Bilder erfolgreich sortiert wurden
+        if meta_files:
+            NEW_IMAGES_DOWNLOADED = True
 
+def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
+    base_name = meta_file.replace('_meta.txt', '')
+    image_moved = False
+    new_image_path = None
+
+    # Versuche, das zugehörige Bild zu finden und zu verschieben/kopieren
+    for extension in ['.jpeg', '.png']:
+        image_path = os.path.join(model_dir, base_name + extension)
+        if os.path.exists(image_path):
+            if valid_meta:
+                # Versuche, das Bild zu kopieren, wenn die Metadaten gültig sind
+                new_image_path = manual_copy(image_path, os.path.join(target_dir, os.path.basename(image_path)))
+            else:
+                # Verschiebe das Bild in den invalid_meta Ordner, wenn die Metadaten ungültig sind
+                new_image_path = move_to_invalid_meta(image_path, model_dir)
+            image_moved = True if new_image_path else False
+            break
+
+    if image_moved:
+        new_meta_path = manual_copy(os.path.join(model_dir, meta_file), os.path.join(target_dir, os.path.basename(meta_file))) if valid_meta else move_to_invalid_meta(os.path.join(model_dir, meta_file), model_dir)
+        return new_image_path, new_meta_path
+    else:
+        return None, None
+
+    
 
 visited_pages = set()
+
 
 
 async def search_models_by_tag(tag, failed_search_requests=[]):
