@@ -23,7 +23,7 @@ def fetch_data(url):
 
 
 def process_data(items, file_path, read_existing_tag):
-    with open(file_path, 'a') as file:
+    with open(file_path, 'a', encoding='utf-8') as file:
         for item in items:
             name =  item.get('name')
             if name and name not in existing_tags:
@@ -33,7 +33,7 @@ def process_data(items, file_path, read_existing_tag):
 
 def read_existing_tag(file_path):
     try:
-        with open(file_path, 'r') as file:
+        with open(file_path, 'r', encoding='utf-8') as file:
             return {line.strip() for line in file}
     except FileNotFoundError:
         return set()
