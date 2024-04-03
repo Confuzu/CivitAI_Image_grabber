@@ -164,6 +164,13 @@ def clear_source_directory(model_dir):
             print(f"Failed to remove file {file_path}. Error: {e}")
 
 
+def clean_path(path):
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        path = path.replace(char, '_')
+    return path
+
+
 def shorten_path_name(path, max_length=120):
     if len(path) <= max_length:
         return path
@@ -212,6 +219,7 @@ def sort_images_by_model_name(model_dir):
                         break
                     
             if model_name_found:
+                model_name = clean_path(model_name)  # Säubere den Modellnamen
                 target_dir = os.path.join(model_dir, model_name)
                 os.makedirs(target_dir, exist_ok=True)
                 process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
@@ -331,7 +339,7 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
                                     tag_model_mapping[tag_dir_name] = []
                                 tag_model_mapping[tag_dir_name].append((model_id, model_name))
                             
-                            model_dir = os.path.join(tag_dir, f"model_{model_id}")
+                            model_dir = os.path.join(tag_dir, f"model_{clean_path(model_id)}")
                             os.makedirs(model_dir, exist_ok=True)
 
 
@@ -425,7 +433,7 @@ def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
         tag_dir = os.path.join(output_dir, tag.replace(" ", "_"))
         for model_info in tag_model_mapping.get(tag, []):
             model_id, model_name = model_info
-            model_dir = os.path.join(tag_dir, f"model_{model_id}")
+            model_dir = os.path.join(tag_dir, f"model_{clean_path(model_id)}")
         
             # Check if the model directory exists
             if not os.path.exists(model_dir):
