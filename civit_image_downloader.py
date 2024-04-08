@@ -12,7 +12,7 @@ from threading import Lock
 
 
 #logging only for debugging not productive 
-log_file_path = "civit_image_downloader_log_0.7.txt"
+log_file_path = "civit_image_downloader_log_0.8.txt"
 logging.basicConfig(filename=log_file_path, level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,7 @@ def clear_source_directory(model_dir):
             os.remove(file_path)
         except Exception as e:
             print(f"Failed to remove file {file_path}. Error: {e}")
+
 
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
@@ -351,7 +352,7 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
                                     tag_model_mapping[tag_dir_name] = []
                                 tag_model_mapping[tag_dir_name].append((model_id, model_name))
                             
-                            model_dir = os.path.join(tag_dir, f"model_{clean_and_shorten_path(model_id)}")
+                            model_dir = os.path.join(tag_dir, f"model_{(model_id)}")
                             os.makedirs(model_dir, exist_ok=True)
 
 
@@ -445,7 +446,7 @@ def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
         tag_dir = os.path.join(output_dir, tag.replace(" ", "_"))
         for model_info in tag_model_mapping.get(tag, []):
             model_id, model_name = model_info
-            model_dir = os.path.join(tag_dir, f"model_{clean_and_shorten_path(model_id)}")
+            model_dir = os.path.join(tag_dir, f"model_{(model_id)}")
         
             # Check if the model directory exists
             if not os.path.exists(model_dir):
