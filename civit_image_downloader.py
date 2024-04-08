@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_0.7
+# civit_image_downloader_0.8
 ##########################################
 
 # API endpoint for retrieving image URLs
