@@ -134,23 +134,23 @@ def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=
 SOURCE_MISSING_MESSAGE_SHOWN = False
 NEW_IMAGES_DOWNLOADED = False
 
-# Anpassung der manual_copy Funktion
+# Customization of the manual_copy function
 def manual_copy(src, dst):
     global SOURCE_MISSING_MESSAGE_SHOWN, NEW_IMAGES_DOWNLOADED
-    # Überprüfung, ob die Quelldatei existiert
+    # Check whether the source file exists
     if os.path.exists(src):
         try:
-            shutil.copy2(src, dst)  # Kopiert die Datei und behält die Metadaten bei
+            shutil.copy2(src, dst) # Copies the file and retains the metadata
             NEW_IMAGES_DOWNLOADED = True
-            return True, dst  # Gibt True zurück, wenn das Kopieren erfolgreich war
+            return True, dst  # Returns True if the copy was successful
         except Exception as e:
-            print(f"Fehler beim Kopieren der Datei {src} nach {dst}. Fehler: {e}")
-            return False  # Gibt False zurück, wenn ein Fehler aufgetreten ist
+            print(f"Error copying the file {src} to {dst}. Error: {e}")
+            return False  # Returns False if an error has occurred
     else:
         if not SOURCE_MISSING_MESSAGE_SHOWN:
-            print(f"Quelldatei {src} existiert nicht. Kopieren übersprungen.")
+            print(f"Source file {src} does not exist. Copy skipped.")
             SOURCE_MISSING_MESSAGE_SHOWN = True
-        return False  # Gibt auch False zurück, wenn die Quelldatei nicht existiert
+        return False # Also returns False if the source file does not exist
 
 
 ##Remove images and metadata files from the source directory.
@@ -166,35 +166,35 @@ def clear_source_directory(model_dir):
 
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
-    #Ersetzen von %20  durch  ein Leerzeichen
+    #Replace %20 with a space
     path = path.replace("%20", " ")
     path = path.replace("%2B", "+")
-    # Ersetzen von nicht zulässigen Zeichen
+   # Replace non-permitted characters
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         path = path.replace(char, '_')
 
-    # Entfernen von Steuerzeichen
+    # Remove control characters
     path = re.sub(r'[\x00-\x1f\x7f]', '', path)
 
-    # Entfernen von abschließenden Leerzeichen oder Punkten
+    # Remove trailing spaces or dots
     path = path.rstrip('. ')
 
-    # Trennen des Pfades in Verzeichnis und Dateiname
+    # Separate the path into directory and file name
     dir_name, file_name = os.path.split(path)
 
-    # Kürzen des Dateinamens, falls notwendig
+    # Shorten the file name if necessary
     if len(file_name) > max_component_length:
         file_name = file_name[:max_component_length - 3] + "..."
 
-    # Kürzen des Verzeichnisnamens, falls notwendig
+    # Shorten the directory name if necessary
     if len(dir_name) > max_total_length - len(file_name):
         dir_name = dir_name[:max_total_length - len(file_name) - 3] + "..."
 
-    # Wiederzusammensetzen des Pfades
+    # Reassemble the path
     shortened_path = os.path.join(dir_name, file_name)
 
-    # Sicherstellen, dass der Gesamtpfad die maximale Länge nicht überschreitet
+    # Ensure that the total path does not exceed the maximum length
     if len(shortened_path) > max_total_length:
         excess_length = len(shortened_path) - max_total_length
         shortened_path = shortened_path[:-excess_length].rstrip('. ')
@@ -218,10 +218,10 @@ def move_to_invalid_meta(src, model_dir):
 def sort_images_by_model_name(model_dir):
     global NEW_IMAGES_DOWNLOADED
     if os.path.exists(model_dir) and os.listdir(model_dir):
-        # Liste alle Meta-Dateien im Verzeichnis auf
+        # List all meta files in the directory
         meta_files = [f for f in os.listdir(model_dir) if f.endswith('_meta.txt')]
         
-        # Behandle Dateien mit und ohne gültige Metadaten separat
+        # Treat files with and without valid metadata separately
         for meta_file in meta_files:
             model_name_found = False
             with open(os.path.join(model_dir, meta_file), 'r', encoding='utf-8') as file:
@@ -232,16 +232,16 @@ def sort_images_by_model_name(model_dir):
                         break
                     
             if model_name_found:
-                model_name = clean_and_shorten_path(model_name)  # Säubere den Modellnamen
+                model_name = clean_and_shorten_path(model_name)  # Clean the model name
                 target_dir = os.path.join(model_dir, model_name)
                 os.makedirs(target_dir, exist_ok=True)
                 process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
             else:
-                # Wenn kein Modellname gefunden wurde oder die Metadaten ungültig sind
+                # If no model name was found or the metadata is invalid
                 process_image_and_meta(model_dir, meta_file, model_dir, valid_meta=False)
         
         clear_source_directory(model_dir)
-        # Setze NEW_IMAGES_DOWNLOADED auf True, wenn neue Bilder erfolgreich sortiert wurden
+        # Set NEW_IMAGES_DOWNLOADED to True when new images have been successfully sorted
         if meta_files:
             NEW_IMAGES_DOWNLOADED = True
 
@@ -250,15 +250,15 @@ def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
     image_moved = False
     new_image_path = None
 
-    # Versuche, das zugehörige Bild zu finden und zu verschieben/kopieren
+   # Try to find and move/copy the corresponding image
     for extension in ['.jpeg', '.png']:
         image_path = os.path.join(model_dir, base_name + extension)
         if os.path.exists(image_path):
             if valid_meta:
-                # Versuche, das Bild zu kopieren, wenn die Metadaten gültig sind
+               # Attempts to copy the image if the metadata is valid
                 new_image_path = manual_copy(image_path, os.path.join(target_dir, os.path.basename(image_path)))
             else:
-                # Verschiebe das Bild in den invalid_meta Ordner, wenn die Metadaten ungültig sind
+               # Move the image to the invalid_meta folder if the metadata is invalida
                 new_image_path = move_to_invalid_meta(image_path, model_dir)
             image_moved = True if new_image_path else False
             break
