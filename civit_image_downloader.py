@@ -185,11 +185,11 @@ def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
 
     # Shorten the file name if necessary
     if len(file_name) > max_component_length:
-        file_name = file_name[:max_component_length - 3] + "..."
+        file_name = file_name[:max_component_length - 3] + "_"
 
     # Shorten the directory name if necessary
     if len(dir_name) > max_total_length - len(file_name):
-        dir_name = dir_name[:max_total_length - len(file_name) - 3] + "..."
+        dir_name = dir_name[:max_total_length - len(file_name) - 3] + "_"
 
     # Reassemble the path
     shortened_path = os.path.join(dir_name, file_name)
