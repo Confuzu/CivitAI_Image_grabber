@@ -465,9 +465,59 @@ def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
                                 relative_path = os.path.relpath(image_info["path"], model_dir)
                                 writer.writerow([tag, prev_tag, relative_path, image_info["url"]])
 
+failed_identifiers = []  # Liste zum Speichern fehlgeschlagener Usernamen und Model-IDs
+
+async def is_valid_username(username):
+    url = f"{base_url}?username={username.strip()}&nsfw=X"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url)
+            if response.status_code == 500:
+                response_data = response.json()
+                if 'error' in response_data and response_data['error'] == "User not found":
+                    return False, "Username not found"
+            return True, None
+        except httpx.RequestError as e:
+            return False, f"Network error: {e}"
+        except json.JSONDecodeError as e:
+            return False, f"Error decoding response: {e}"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
+
+
+async def is_valid_model_id(model_id):
+    url = f"{base_url}?modelId={str(model_id)}&nsfw=X"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url)
+            if response.status_code == 500:
+                return False, f"Invalid input syntax for model ID: {model_id}"
+            elif response.status_code == 304:
+                response_data = response.json()
+                if not response_data['items']:
+                    return False, f"No items found for model ID: {model_id}"
+            return True, None
+        except httpx.RequestError as e:
+            return False, f"Network error: {e}"
+        except json.JSONDecodeError as e:
+            return False, f"Error decoding response: {e}"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
+
 
 async def download_images(identifier, identifier_type, timeout_value, quality='SD'):
     global NEW_IMAGES_DOWNLOADED
+    valid, error_message = True, None
+    if identifier_type == 'username':
+        valid, error_message = await is_valid_username(identifier)
+    elif identifier_type == 'model':
+        valid, error_message = await is_valid_model_id(identifier)
+
+    if not valid:
+        print(f"Skipping: {error_message}")
+        failed_identifiers.append((identifier_type, identifier))
+        return [], 0
+                
     if identifier_type == 'model':
         url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
     elif identifier_type == 'username':
@@ -668,4 +718,10 @@ async def main():
         raise
 
 asyncio.run(main())
+
+if failed_identifiers:
+    print("Failed identifiers:")
+    for id_type, id_value in failed_identifiers:
+        print(f"{id_type}: {id_value}")
+        
 print("Image download completed.")
