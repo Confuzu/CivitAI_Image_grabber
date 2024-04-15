@@ -465,7 +465,7 @@ def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
                                 relative_path = os.path.relpath(image_info["path"], model_dir)
                                 writer.writerow([tag, prev_tag, relative_path, image_info["url"]])
 
-failed_identifiers = []  # Liste zum Speichern fehlgeschlagener Usernamen und Model-IDs
+failed_identifiers = []  # List for saving failed usernames and model IDs
 
 async def is_valid_username(username):
     url = f"{base_url}?username={username.strip()}&nsfw=X"
