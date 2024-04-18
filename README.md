@@ -24,6 +24,7 @@ The script  will ask you to
 
           Enter timeout value (in seconds): 
           Choose image quality (1 for SD, 2 for HD): 
+          Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: 
           Choose mode (1 for username, 2 for model ID, 3 for tag search): 
           Mode 3 
           Enter tags (comma-separated): TAG
@@ -38,6 +39,31 @@ Optional: 2 or more Items which are separated with a comma
 
 
 # Update History
+
+## 0.9 Feature & Updates
+
+New Feature
+
+Redownload of images.
+The new option allows the tracking file to be switched off. So that already downloaded images can be downloaded again. 
+```
+Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: 
+```
+If you choose 2 or just hit enter the Script will run with Tracking as Default like always. <br />
+
+
+New Update <br />
+
+When the script is finished, a summary of the usernames or Model IDs that could not be found is displayed. <br />
+```
+Failed identifiers:
+username: 19wer244rew
+```
+```
+Failed identifiers:
+ModelID: 493533
+```
+
 
 ## 0.8 Helper script tagnames
 With this Script you can search locally in txt a file if your TAG is searchable.  <br />
