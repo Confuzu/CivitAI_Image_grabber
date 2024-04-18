@@ -12,14 +12,14 @@ from threading import Lock
 
 
 #logging only for debugging not productive 
-log_file_path = "civit_image_downloader_log_0.9.txt"
+log_file_path = "civit_image_downloader_log_0.8.txt"
 logging.basicConfig(filename=log_file_path, level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_0.9
+# civit_image_downloader_0.8
 ##########################################
 
 # API endpoint for retrieving image URLs
@@ -168,6 +168,7 @@ def clear_source_directory(model_dir):
 
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
+    #Replace %20 with a space
     path = path.replace("%20", " ")
     path = path.replace("%2B", "+")
    # Replace non-permitted characters
@@ -469,7 +470,7 @@ def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
                                 relative_path = os.path.relpath(image_info["path"], model_dir)
                                 writer.writerow([tag, prev_tag, relative_path, image_info["url"]])
 
-failed_identifiers = []  # List for saving failed usernames and model IDs
+failed_identifiers = []  # Liste zum Speichern fehlgeschlagener Usernamen und Model-IDs
 
 async def is_valid_username(username):
     url = f"{base_url}?username={username.strip()}&nsfw=X"
@@ -686,9 +687,14 @@ async def main():
             tasks.extend([download_images(username.strip(), 'username', timeout_value, quality, allow_redownload) for username in usernames])
 
         elif choice == "2":
-            model_ids = input("Enter model IDs (comma-separated): ").split(",")
-            tasks.extend([download_images(model_id.strip(), 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
-
+            while True:
+                model_ids_input = input("Enter model IDs (comma-separated): ")
+                model_ids = model_ids_input.split(",")
+                if all(model_id.strip().isdigit() for model_id in model_ids):
+                    tasks.extend([download_images(model_id.strip(), 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
+                    break
+                else:
+                    print("Invalid input. Please enter only numeric model IDs.")
         else:
             print("Invalid choice!")
             return
@@ -724,8 +730,8 @@ async def main():
         print_download_statistics()
 
     except Exception as e:
-        logger.exception(f"An unexpected error occurred: {str(e)}")
-        raise
+            logger.exception(f"An unexpected error occurred: {str(e)}")
+            raise
 
 asyncio.run(main())
 
