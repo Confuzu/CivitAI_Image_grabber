@@ -12,14 +12,14 @@ from threading import Lock
 
 
 #logging only for debugging not productive 
-log_file_path = "civit_image_downloader_log_0.8.txt"
+log_file_path = "civit_image_downloader_log_0.9.txt"
 logging.basicConfig(filename=log_file_path, level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_0.8
+# civit_image_downloader_0.9
 ##########################################
 
 # API endpoint for retrieving image URLs
@@ -35,6 +35,8 @@ download_stats = {
     "downloaded": [],
     "skipped": [],
 }
+
+allow_redownload = False
 
 # Function to download an image from the provided URL
 async def download_image(url, output_path, timeout_value, quality='SD'):
@@ -166,7 +168,6 @@ def clear_source_directory(model_dir):
 
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
-    #Replace %20 with a space
     path = path.replace("%20", " ")
     path = path.replace("%2B", "+")
    # Replace non-permitted characters
@@ -310,7 +311,7 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
 
 tag_model_mapping = {}
 
-async def download_images_for_model_with_tag_check(model_ids, timeout_value, quality='SD', tag_to_check=None, tag_dir_name=None, sanitized_tag_dir_name=None, disable_prompt_check=False):
+async def download_images_for_model_with_tag_check(model_ids, timeout_value, quality='SD', tag_to_check=None, tag_dir_name=None, sanitized_tag_dir_name=None, disable_prompt_check=False, allow_redownload=2):
     global NEW_IMAGES_DOWNLOADED
     failed_urls = []
     images_without_meta = 0
@@ -367,9 +368,11 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
                                     image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
 
                                     # Check if the image has already been downloaded
-                                    if not check_if_image_downloaded(str(image_id), image_path, quality):
-                                        task = download_image(image_url, image_path, timeout_value, quality)
-                                        tasks.append(task)
+                                    if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
+                                        continue
+
+                                    task = download_image(image_url, image_path, timeout_value, quality)
+                                    tasks.append(task)
                                 else:
                                     tag_words = tag_to_check.lower().split("_")
                                     if all(word in prompt.lower() for word in tag_words):
@@ -380,9 +383,10 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
                                         image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
                                 
                                         # Check if the image has already been downloaded
-                                        if not check_if_image_downloaded(str(image_id), image_path, quality):
-                                            task = download_image(image_url, image_path, timeout_value, quality)
-                                            tasks.append(task)
+                                        if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
+                                            continue
+                                        task = download_image(image_url, image_path, timeout_value, quality)
+                                        tasks.append(task)
                                     else:
                                         continue
 
@@ -505,19 +509,17 @@ async def is_valid_model_id(model_id):
             return False, f"Unexpected error: {str(e)}"
 
 
-async def download_images(identifier, identifier_type, timeout_value, quality='SD'):
+async def download_images(identifier, identifier_type, timeout_value, quality='SD', allow_redownload=2):
     global NEW_IMAGES_DOWNLOADED
     valid, error_message = True, None
     if identifier_type == 'username':
         valid, error_message = await is_valid_username(identifier)
     elif identifier_type == 'model':
         valid, error_message = await is_valid_model_id(identifier)
-
     if not valid:
         print(f"Skipping: {error_message}")
         failed_identifiers.append((identifier_type, identifier))
         return [], 0
-                
     if identifier_type == 'model':
         url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
     elif identifier_type == 'username':
@@ -565,9 +567,11 @@ async def download_images(identifier, identifier_type, timeout_value, quality='S
                             image_path = os.path.join(dir_name, f"{image_id}{image_extension}")
 
                             # Check if the image has already been downloaded
-                            if not check_if_image_downloaded(str(image_id), image_path, quality):
-                                task = download_image(image_url, image_path, timeout_value, quality)
-                                tasks.append(task)
+                            if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
+                                continue
+
+                            task = download_image(image_url, image_path, timeout_value, quality)
+                            tasks.append(task)
 
                         # This will run all download tasks asynchronously
                         download_results = await asyncio.gather(*tasks)
@@ -646,6 +650,15 @@ async def main():
             print("Invalid quality choice. Using default quality SD.")
             quality = 'SD'
 
+        allow_redownload_choice = input("Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: ")
+        if allow_redownload_choice == '1':
+            allow_redownload = 1
+        elif allow_redownload_choice == '2' or allow_redownload_choice.strip() == '':
+            allow_redownload = 2
+        else:
+            print("Invalid choice. Using default value (2 - No).")
+            allow_redownload = 2
+
         failed_search_requests = []
         failed_urls = []
         images_without_meta = 0
@@ -663,18 +676,18 @@ async def main():
                 sanitized_tag_dir_name = tag.replace(" ", "_")
                 model_ids = await search_models_by_tag(tag.replace("_", "%20"), failed_search_requests)
                 tag_to_check = None if disable_prompt_check else tag
-                tasks_for_tag, failed_urls_for_tag, images_without_meta_for_tag, sanitized_tag_dir_name_for_tag = await download_images_for_model_with_tag_check(model_ids, timeout_value, quality, tag_to_check, tag, sanitized_tag_dir_name, disable_prompt_check)
+                tasks_for_tag, failed_urls_for_tag, images_without_meta_for_tag, sanitized_tag_dir_name_for_tag = await download_images_for_model_with_tag_check(model_ids, timeout_value, quality, tag_to_check, tag, sanitized_tag_dir_name, disable_prompt_check, allow_redownload)
                 tasks.extend(tasks_for_tag)
                 failed_urls.extend(failed_urls_for_tag)
                 images_without_meta += images_without_meta_for_tag
 
         elif choice == "1":
             usernames = input("Enter usernames (comma-separated): ").split(",")
-            tasks.extend([download_images(username.strip(), 'username', timeout_value, quality) for username in usernames])
+            tasks.extend([download_images(username.strip(), 'username', timeout_value, quality, allow_redownload) for username in usernames])
 
         elif choice == "2":
             model_ids = input("Enter model IDs (comma-separated): ").split(",")
-            tasks.extend([download_images(model_id.strip(), 'model', timeout_value, quality) for model_id in model_ids])
+            tasks.extend([download_images(model_id.strip(), 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
 
         else:
             print("Invalid choice!")
@@ -695,11 +708,8 @@ async def main():
 
         if failed_urls:
             print("Retrying failed URLs...")
-            for url, id_or_username, image_id in failed_urls:
-                dir_name = os.path.join(output_dir, id_or_username)
-                os.makedirs(dir_name, exist_ok=True)
-                output_path = os.path.join(dir_name, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
-                await download_image(url, output_path)
+            for url in failed_urls:
+                await download_image(url, timeout_value=timeout_value, quality=quality)
 
         # Attempt to retry failed search requests
         if failed_search_requests:
@@ -714,8 +724,8 @@ async def main():
         print_download_statistics()
 
     except Exception as e:
-        logger.exception(f"An unexpected error occurred: {str(e)}")
-        raise
+            logger.exception(f"An unexpected error occurred: {str(e)}")
+            raise
 
 asyncio.run(main())
 
@@ -723,5 +733,5 @@ if failed_identifiers:
     print("Failed identifiers:")
     for id_type, id_value in failed_identifiers:
         print(f"{id_type}: {id_value}")
-        
+
 print("Image download completed.")
