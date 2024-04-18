@@ -724,8 +724,8 @@ async def main():
         print_download_statistics()
 
     except Exception as e:
-            logger.exception(f"An unexpected error occurred: {str(e)}")
-            raise
+        logger.exception(f"An unexpected error occurred: {str(e)}")
+        raise
 
 asyncio.run(main())
 
