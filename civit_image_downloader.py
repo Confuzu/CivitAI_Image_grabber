@@ -13,7 +13,7 @@ from threading import Lock
 
 #logging only for debugging not productive 
 log_file_path = "civit_image_downloader_log_0.8.txt"
-logging.basicConfig(filename=log_file_path, level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename=log_file_path, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
+
+headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
+        "Content-Type": "application/json"
+    }
 
 # Directory for image downloads
 output_dir = "image_downloads"
@@ -50,7 +55,7 @@ async def download_image(url, output_path, timeout_value, quality='SD'):
         async with semaphore:
             try:
                 
-                response = await client.get(url, timeout=timeout_value)
+                response = await client.get(url, timeout=timeout_value, headers=headers)
                 response.raise_for_status()  # Ensures that the HTTP request was successful
                 total_size = int(response.headers.get('content-length', 0))
                 progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, desc=f"Downloading {output_path_with_extension}")
@@ -276,7 +281,6 @@ def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
 visited_pages = set()
 
 
-
 async def search_models_by_tag(tag, failed_search_requests=[]):
     base_url = f"https://civitai.com/api/v1/models?tag={tag}&nsfw=true"
     model_id = set()
@@ -284,7 +288,7 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
         async with semaphore:
             while base_url:
                 try:
-                    response = await client.get(base_url)
+                    response = await client.get(base_url, headers=headers)
                     if response.status_code == 200:
                         data = response.json()
                         items = data.get('items', [])
@@ -333,7 +337,7 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
             async with httpx.AsyncClient() as client:
                 async with semaphore:
                     try:
-                        response = await client.get(url, timeout=timeout_value)
+                        response = await client.get(url, timeout=timeout_value, headers=headers)
                         if response.status_code == 200:
                             try:
                                 data = response.json()
@@ -476,7 +480,7 @@ async def is_valid_username(username):
     url = f"{base_url}?username={username.strip()}&nsfw=X"
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
             if response.status_code == 500:
                 response_data = response.json()
                 if 'error' in response_data and response_data['error'] == "User not found":
@@ -494,7 +498,7 @@ async def is_valid_model_id(model_id):
     url = f"{base_url}?modelId={str(model_id)}&nsfw=X"
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
             if response.status_code == 500:
                 return False, f"Invalid input syntax for model ID: {model_id}"
             elif response.status_code == 304:
@@ -741,3 +745,5 @@ if failed_identifiers:
         print(f"{id_type}: {id_value}")
 
 print("Image download completed.")
+
+
