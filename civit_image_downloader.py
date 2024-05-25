@@ -11,7 +11,7 @@ import csv
 from threading import Lock
 
 
-#logging only for debugging not productive 
+# Logging only for debugging, not productive
 log_file_path = "civit_image_downloader_log_0.8.txt"
 logging.basicConfig(filename=log_file_path, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -19,20 +19,16 @@ logger = logging.getLogger(__name__)
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_0.8
+# civit_image_downloader_1.0
 ##########################################
 
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
 
 headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
-        "Content-Type": "application/json"
-    }
-
-# Directory for image downloads
-output_dir = "image_downloads"
-os.makedirs(output_dir, exist_ok=True)
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Content-Type": "application/json"
+}
 
 semaphore = asyncio.Semaphore(10)
 
@@ -40,6 +36,15 @@ download_stats = {
     "downloaded": [],
     "skipped": [],
 }
+
+# Directory for image downloads
+output_dir = "image_downloads"
+os.makedirs(output_dir, exist_ok=True)
+
+def create_option_folder(option_name, base_dir):
+    option_dir = os.path.join(base_dir, option_name)
+    os.makedirs(option_dir, exist_ok=True)
+    return option_dir
 
 allow_redownload = False
 
@@ -80,7 +85,7 @@ async def download_image(url, output_path, timeout_value, quality='SD'):
                 return False
 
 
-# Async function to write meta data to a text file. If no meta data is available, the url to the image is written to the txt file
+# Async function to write meta data to a text file. If no meta data is available, the URL to the image is written to the txt file
 async def write_meta_data(meta, output_path, image_id, username):
     if not meta:
         output_path = output_path.replace(".txt", "_no_meta.txt")
@@ -122,10 +127,10 @@ def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=
         image_key = f"{image_id}_{quality}"
         current_date = datetime.now().strftime("%Y-%m-%d - %H:%M")
 
-    # Merge tags using a generator expression
+        # Merge tags using a generator expression
         merged_tags = list(set(downloaded_images.get(image_key, {}).get("tags", [])) | set(tags or []))
         
-    # Create a new entry for the image
+        # Create a new entry for the image
         downloaded_images[image_key] = {
             "path": image_path,
             "quality": quality,
@@ -160,7 +165,7 @@ def manual_copy(src, dst):
         return False # Also returns False if the source file does not exist
 
 
-##Remove images and metadata files from the source directory.
+# Remove images and metadata files from the source directory.
 def clear_source_directory(model_dir):
     files_to_remove = [f for f in os.listdir(model_dir) if f.endswith(('.jpeg', '.png')) or f.endswith('_meta.txt')]
     for file in files_to_remove:
@@ -173,10 +178,10 @@ def clear_source_directory(model_dir):
 
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
-    #Replace %20 with a space
+    # Replace %20 with a space
     path = path.replace("%20", " ")
     path = path.replace("%2B", "+")
-   # Replace non-permitted characters
+    # Replace non-permitted characters
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         path = path.replace(char, '_')
@@ -257,15 +262,15 @@ def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
     image_moved = False
     new_image_path = None
 
-   # Try to find and move/copy the corresponding image
+    # Try to find and move/copy the corresponding image
     for extension in ['.jpeg', '.png']:
         image_path = os.path.join(model_dir, base_name + extension)
         if os.path.exists(image_path):
             if valid_meta:
-               # Attempts to copy the image if the metadata is valid
+                # Attempts to copy the image if the metadata is valid
                 new_image_path = manual_copy(image_path, os.path.join(target_dir, os.path.basename(image_path)))
             else:
-               # Move the image to the invalid_meta folder if the metadata is invalida
+                # Move the image to the invalid_meta folder if the metadata is invalid
                 new_image_path = move_to_invalid_meta(image_path, model_dir)
             image_moved = True if new_image_path else False
             break
@@ -316,7 +321,7 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
 
 tag_model_mapping = {}
 
-async def download_images_for_model_with_tag_check(model_ids, timeout_value, quality='SD', tag_to_check=None, tag_dir_name=None, sanitized_tag_dir_name=None, disable_prompt_check=False, allow_redownload=2):
+async def download_images_for_model_with_tag_check(model_ids, option_folder, timeout_value, quality='SD', tag_to_check=None, tag_dir_name=None, sanitized_tag_dir_name=None, disable_prompt_check=False, allow_redownload=2):
     global NEW_IMAGES_DOWNLOADED
     failed_urls = []
     images_without_meta = 0
@@ -350,7 +355,7 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
                             if items and isinstance(items[0], dict):
                                 model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
 
-                            tag_dir = os.path.join(output_dir, sanitized_tag_dir_name)
+                            tag_dir = os.path.join(option_folder, sanitized_tag_dir_name)
                             os.makedirs(tag_dir, exist_ok=True)
 
                             with tag_model_mapping_lock:
@@ -441,18 +446,18 @@ async def download_images_for_model_with_tag_check(model_ids, timeout_value, qua
     return tasks, failed_urls, images_without_meta, sanitized_tag_dir_name
 
 
-def sort_images_by_tag(tag_model_mapping):
+def sort_images_by_tag(option_folder, tag_model_mapping):
     with tag_model_mapping_lock:
         for tag, model_ids in tag_model_mapping.items():
             sanitized_tag = tag.replace(" ", "_")
-            tag_dir = os.path.join(output_dir, sanitized_tag)
+            tag_dir = os.path.join(option_folder, sanitized_tag)
             if not os.listdir(tag_dir):
                 print(f"No images found for the tag: {tag}")
 
 
-def write_summary_to_csv(tag, downloaded_images, tag_model_mapping):
+def write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mapping):
     with tag_model_mapping_lock:
-        tag_dir = os.path.join(output_dir, tag.replace(" ", "_"))
+        tag_dir = os.path.join(option_folder, tag.replace(" ", "_"))
         for model_info in tag_model_mapping.get(tag, []):
             model_id, model_name = model_info
             model_dir = os.path.join(tag_dir, f"model_{(model_id)}")
@@ -514,7 +519,7 @@ async def is_valid_model_id(model_id):
             return False, f"Unexpected error: {str(e)}"
 
 
-async def download_images(identifier, identifier_type, timeout_value, quality='SD', allow_redownload=2):
+async def download_images(identifier, option_folder, identifier_type, timeout_value, quality='SD', allow_redownload=2):
     global NEW_IMAGES_DOWNLOADED
     valid, error_message = True, None
     if identifier_type == 'username':
@@ -558,9 +563,9 @@ async def download_images(identifier, identifier_type, timeout_value, quality='S
                             model_name = "unknown_model"
                             if items and isinstance(items[0], dict):
                                 model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
-                            dir_name = os.path.join(output_dir, f"model_{identifier}")
+                            dir_name = os.path.join(option_folder, f"model_{identifier}")
                         elif identifier_type == 'username':
-                            dir_name = os.path.join(output_dir, identifier.strip())
+                            dir_name = os.path.join(option_folder, identifier.strip())
 
                         os.makedirs(dir_name, exist_ok=True)
 
@@ -677,25 +682,29 @@ async def main():
             tags = [tag.strip().replace(" ", "_") for tag in tags_input.split(',')]
             disable_prompt_check = input("Disable prompt check? (y/n): ").lower() in ['y', 'yes']
 
+            option_folder = create_option_folder('Model_Tag_Search', output_dir)
+
             for tag in tags:
                 sanitized_tag_dir_name = tag.replace(" ", "_")
                 model_ids = await search_models_by_tag(tag.replace("_", "%20"), failed_search_requests)
                 tag_to_check = None if disable_prompt_check else tag
-                tasks_for_tag, failed_urls_for_tag, images_without_meta_for_tag, sanitized_tag_dir_name_for_tag = await download_images_for_model_with_tag_check(model_ids, timeout_value, quality, tag_to_check, tag, sanitized_tag_dir_name, disable_prompt_check, allow_redownload)
+                tasks_for_tag, failed_urls_for_tag, images_without_meta_for_tag, sanitized_tag_dir_name_for_tag = await download_images_for_model_with_tag_check(model_ids, option_folder, timeout_value, quality, tag_to_check, tag, sanitized_tag_dir_name, disable_prompt_check, allow_redownload)
                 tasks.extend(tasks_for_tag)
                 failed_urls.extend(failed_urls_for_tag)
                 images_without_meta += images_without_meta_for_tag
 
         elif choice == "1":
             usernames = input("Enter usernames (comma-separated): ").split(",")
-            tasks.extend([download_images(username.strip(), 'username', timeout_value, quality, allow_redownload) for username in usernames])
+            option_folder = create_option_folder('Username_Search', output_dir)
+            tasks.extend([download_images(username.strip(), option_folder, 'username', timeout_value, quality, allow_redownload) for username in usernames])
 
         elif choice == "2":
+            option_folder = create_option_folder('Model_ID_Search', output_dir)
             while True:
                 model_ids_input = input("Enter model IDs (comma-separated): ")
                 model_ids = model_ids_input.split(",")
                 if all(model_id.strip().isdigit() for model_id in model_ids):
-                    tasks.extend([download_images(model_id.strip(), 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
+                    tasks.extend([download_images(model_id.strip(), option_folder, 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
                     break
                 else:
                     print("Invalid input. Please enter only numeric model IDs.")
@@ -711,15 +720,15 @@ async def main():
         images_without_meta += sum([count for result in results for count in result[1:]])
 
         # Sort images into tag-related folders
-        sort_images_by_tag(tag_model_mapping)
+        sort_images_by_tag(option_folder, tag_model_mapping)
 
         for tag, model_ids in tag_model_mapping.items():
-            write_summary_to_csv(tag, downloaded_images, tag_model_mapping)
+            write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mapping)
 
         if failed_urls:
             print("Retrying failed URLs...")
             for url in failed_urls:
-                await download_image(url, timeout_value=timeout_value, quality=quality)
+                await download_image(url, option_folder, timeout_value=timeout_value, quality=quality)
 
         # Attempt to retry failed search requests
         if failed_search_requests:
@@ -734,8 +743,8 @@ async def main():
         print_download_statistics()
 
     except Exception as e:
-            logger.exception(f"An unexpected error occurred: {str(e)}")
-            raise
+        logger.exception(f"An unexpected error occurred: {str(e)}")
+        raise
 
 asyncio.run(main())
 
@@ -745,5 +754,3 @@ if failed_identifiers:
         print(f"{id_type}: {id_value}")
 
 print("Image download completed.")
-
-
