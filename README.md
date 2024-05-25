@@ -36,9 +36,53 @@ If you leave the image quality value emtpy it will use the default image quality
 
 Optional: 2 or more Items which are separated with a comma
 
+**Folder Structure**  <br /> 
+The downloaded files will be organized in the following structure:
+```
+image_downloads/
+└── Username_Search/
+|   ├── Username/
+│   |   ├── Model1/
+│   |   |   ├── image1.jpeg
+│   |   |   ├── image1.png
+│   |   |   └── details.txt
+│   |   ├── Model2/
+│   |       ├── image1.jpeg
+│   |       ├── image1.png
+│   |       └── details.txt
 
+├── Model_ID_Search/
+│   └── Model_ID/
+│       ├── Model1/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── Model2/
+│           ├── image1.jpeg
+│           ├── image1.png
+│           └── details.txt
 
+├── Model_Tag_Search/
+│   └── Searched_tag/
+│       ├── model_ID/
+│           ├──Model1/
+│           |   ├── image1.jpeg
+│           |   ├── image1.png
+│           |   └── details.txt
+│           └── Searched_tag_summary_YYYYMMDD.csv
+│           ├──Model2/
+            |   ├── image1.jpeg
+            |   ├── image1.png
+            |   └── details.txt
+│           └── Searched_tag_summary_YYYYMMDD.csv
+```
 # Update History
+
+## 1.0  Update
+
+Updated Folder Structure. <br />
+The script creates a Folder for each Option you can choose.  <br />
+This new structure ensures better organization based on the search type, making image management more efficient. <br />
 
 ## 0.9 Feature & Updates
 
