@@ -25,13 +25,13 @@ The script  will ask you to
           Enter timeout value (in seconds): 
           Choose image quality (1 for SD, 2 for HD): 
           Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: 
-          Choose mode (1 for username, 2 for model ID, 3 for tag search): 
+          Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID):
           Mode 3 
           Enter tags (comma-separated): TAG
           Disable prompt check? (y/n):
 
                         
-If you leave the timeout value emtpy it will use the default Timeout value 20 sec. <br /> 
+If you leave the timeout value emtpy it will use the default Timeout value 60 sec. <br /> 
 If you leave the image quality value emtpy it will use the default image quality Value SD.
 
 Optional: 2 or more Items which are separated with a comma
@@ -62,6 +62,17 @@ image_downloads/
 │           ├── image1.png
 │           └── details.txt
 
+├── Model_Version_ID_Search/
+    └── Version_ID/
+        ├── Model1/
+        |   ├── image1.jpeg
+        |   ├── image1.png
+        |   └── details.txt
+        ├── Model2/
+        |   ├── image1.jpeg
+        |   ├── image1.png
+        |   └── details.txt
+
 ├── Model_Tag_Search/
 │   └── Searched_tag/
 │       ├── model_ID/
@@ -77,6 +88,22 @@ image_downloads/
 │           └── Searched_tag_summary_YYYYMMDD.csv
 ```
 # Update History
+
+## 1.1 New Feature & Update
+
+### New Download Option Modelversion ID   <br />
+The script can now selectively download images that belong to a specific model version ID. Option 4 <br />
+This saves disk space and in addition, the Civit AI Server API is used less, which leads to a more efficient use of resources. <br />
+The Script will download the Images to this new Folder  --> Model_Version_ID_Search<br />
+Updated the **Folder Structure** <br />
+
+
+### Updated Timeout  <br />
+i have noticed that the timeout of 20 seconds is too short for model ID and version ID and that i get more network errors than downloads,  <br />
+so i have set it to 60 seconds for now.  <br />
+But if you want to be on the safe side, then enter the following: 120  for the option: Enter timeout value (in seconds): <br />
+this has always worked up to now <br />
+
 
 ## 1.0  Update
 
