@@ -12,14 +12,14 @@ from threading import Lock
 
 
 # Logging only for debugging, not productive
-log_file_path = "civit_image_downloader_log_0.8.txt"
+log_file_path = "civit_image_downloader_log_1.1.txt"
 logging.basicConfig(filename=log_file_path, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_1.0
+# civit_image_downloader_1.1
 ##########################################
 
 # API endpoint for retrieving image URLs
@@ -479,7 +479,7 @@ def write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mappin
                                 relative_path = os.path.relpath(image_info["path"], model_dir)
                                 writer.writerow([tag, prev_tag, relative_path, image_info["url"]])
 
-failed_identifiers = []  # Liste zum Speichern fehlgeschlagener Usernamen und Model-IDs
+failed_identifiers = []  # List for saving failed usernames and model IDs
 
 async def is_valid_username(username):
     url = f"{base_url}?username={username.strip()}&nsfw=X"
@@ -499,17 +499,41 @@ async def is_valid_username(username):
             return False, f"Unexpected error: {str(e)}"
 
 
-async def is_valid_model_id(model_id):
-    url = f"{base_url}?modelId={str(model_id)}&nsfw=X"
+async def is_valid_model_id(identifier):
+    url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(url, headers=headers)
             if response.status_code == 500:
-                return False, f"Invalid input syntax for model ID: {model_id}"
+                # If the modelId fails, try modelVersionId
+                url = f"{base_url}?modelVersionId={str(identifier)}&nsfw=X"
+                response = await client.get(url, headers=headers)
+                if response.status_code == 500:
+                    return False, f"Invalid input syntax for model ID or model version ID: {identifier}"
             elif response.status_code == 304:
                 response_data = response.json()
                 if not response_data['items']:
-                    return False, f"No items found for model ID: {model_id}"
+                    return False, f"No items found for model ID or model version ID: {identifier}"
+            return True, None
+        except httpx.RequestError as e:
+            return False, f"Network error: {e}"
+        except json.JSONDecodeError as e:
+            return False, f"Error decoding response: {e}"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
+
+
+async def is_valid_model_version_id(model_version_id):
+    url = f"{base_url}?modelVersionId={str(model_version_id)}&nsfw=X"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 500:
+                return False, f"Invalid input syntax for model version ID: {model_version_id}"
+            elif response.status_code == 304:
+                response_data = response.json()
+                if not response_data['items']:
+                    return False, f"No items found for model version ID: {model_version_id}"
             return True, None
         except httpx.RequestError as e:
             return False, f"Network error: {e}"
@@ -526,16 +550,20 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
         valid, error_message = await is_valid_username(identifier)
     elif identifier_type == 'model':
         valid, error_message = await is_valid_model_id(identifier)
+    elif identifier_type == 'modelVersion':
+        valid, error_message = await is_valid_model_version_id(identifier)
     if not valid:
         print(f"Skipping: {error_message}")
         failed_identifiers.append((identifier_type, identifier))
         return [], 0
     if identifier_type == 'model':
         url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
+    elif identifier_type == 'modelVersion':
+        url = f"{base_url}?modelVersionId={str(identifier)}&nsfw=X"
     elif identifier_type == 'username':
         url = f"{base_url}?username={identifier.strip()}&nsfw=X"
     else:
-        raise ValueError("Invalid identifier_type. Should be 'model' or 'username'.")
+        raise ValueError("Invalid identifier_type. Should be 'model', 'modelVersion', or 'username'.")
 
     failed_urls = []
     images_without_meta = 0
@@ -558,12 +586,12 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
 
                         items = data.get('items', [])
 
-                        # Create directory for model ID or username
-                        if identifier_type == 'model':
+                        # Create directory for model ID, model version ID, or username
+                        if identifier_type in ['model', 'modelVersion']:
                             model_name = "unknown_model"
                             if items and isinstance(items[0], dict):
                                 model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
-                            dir_name = os.path.join(option_folder, f"model_{identifier}")
+                            dir_name = os.path.join(option_folder, f"{identifier_type}_{identifier}")
                         elif identifier_type == 'username':
                             dir_name = os.path.join(option_folder, identifier.strip())
 
@@ -611,7 +639,7 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
                     print(f"Request timed out: {str(e)}")
                     continue
 
-    if identifier_type == 'model':
+    if identifier_type in ['model', 'modelVersion']:
         # Sorting the images by model name after downloading them
         sort_images_by_model_name(dir_name)
     elif identifier_type == 'username':
@@ -648,8 +676,8 @@ async def main():
         if timeout_input.isdigit() and int(timeout_input) > 0:
             timeout_value = int(timeout_input)
         else:
-            print("Invalid timeout value. Using default value of 20 seconds.")
-            timeout_value = 20
+            print("Invalid timeout value. Using default value of 60 seconds.")
+            timeout_value = 60
 
         quality_choice = input("Choose image quality (1 for SD, 2 for HD): ")
         if quality_choice == '2':
@@ -673,8 +701,8 @@ async def main():
         failed_urls = []
         images_without_meta = 0
 
-        # Extended choice options including tag search
-        choice = input("Choose mode (1 for username, 2 for model ID, 3 for Model tag search): ")
+        # Extended choice options including tag search and modelVersionId
+        choice = input("Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID): ")
         tasks = []
 
         if choice == "3":
@@ -708,6 +736,17 @@ async def main():
                     break
                 else:
                     print("Invalid input. Please enter only numeric model IDs.")
+
+        elif choice == "4":
+            option_folder = create_option_folder('Model_Version_ID_Search', output_dir)
+            while True:
+                model_version_ids_input = input("Enter model version IDs (comma-separated): ")
+                model_version_ids = model_version_ids_input.split(",")
+                if all(model_version_id.strip().isdigit() for model_version_id in model_version_ids):
+                    tasks.extend([download_images(model_version_id.strip(), option_folder, 'modelVersion', timeout_value, quality, allow_redownload) for model_version_id in model_version_ids])
+                    break
+                else:
+                    print("Invalid input. Please enter only numeric model version IDs.")
         else:
             print("Invalid choice!")
             return
