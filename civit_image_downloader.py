@@ -9,18 +9,27 @@ from datetime import datetime
 import logging
 import csv
 from threading import Lock
+import argparse
 
 
-# Logging only for debugging, not productive
-log_file_path = "civit_image_downloader_log_1.1.txt"
-logging.basicConfig(filename=log_file_path, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+
+# Setup logging
+script_dir = os.path.dirname(os.path.abspath(__file__))
+log_file_path = os.path.join(script_dir, "civit_image_downloader_log_1.2.txt")
+logger_cid = logging.getLogger('cid')
+logger_cid.setLevel(logging.DEBUG)
+file_handler_cid = logging.FileHandler(log_file_path, encoding='utf-8')
+file_handler_cid.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler_cid.setFormatter(formatter)
+logger_cid.addHandler(file_handler_cid)
 
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_1.1
+# civit_image_downloader_1.2
 ##########################################
+
 
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
@@ -32,14 +41,28 @@ headers = {
 
 semaphore = asyncio.Semaphore(10)
 
-download_stats = {
-    "downloaded": [],
-    "skipped": [],
-}
-
 # Directory for image downloads
 output_dir = "image_downloads"
 os.makedirs(output_dir, exist_ok=True)
+
+
+def is_command_line_mode():
+    return any(vars(args).values())
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="CivitAI Image Downloader")
+    parser.add_argument("--timeout", type=int, help="Timeout value in seconds")
+    parser.add_argument("--quality", type=int, choices=[1, 2], help="Image quality (1 for SD, 2 for HD)")
+    parser.add_argument("--redownload", type=int, choices=[1, 2], help="Allow re-downloading of images (1 for Yes, 2 for No)")
+    parser.add_argument("--mode", type=int, choices=[1, 2, 3, 4], help="Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID)")
+    parser.add_argument("--tags", help="Tags for Model tag search (comma-separated)")
+    parser.add_argument("--disable_prompt_check", choices=['y', 'n'], help="Disable prompt check (y/n)")
+    parser.add_argument("--username", help="Username for mode 1")
+    parser.add_argument("--model_id", help="Model ID for mode 2")
+    parser.add_argument("--model_version_id", help="Model Version ID for mode 4")
+    return parser.parse_args()
+args = parse_arguments()
+
 
 def create_option_folder(option_name, base_dir):
     option_dir = os.path.join(base_dir, option_name)
@@ -48,20 +71,20 @@ def create_option_folder(option_name, base_dir):
 
 allow_redownload = False
 
+
 # Function to download an image from the provided URL
 async def download_image(url, output_path, timeout_value, quality='SD'):
-    global download_stats  # Make sure that download_stats is available globally.
+    logger_cid.info(f"Attempting to download: {url}")
     file_extension = ".png" if quality == 'HD' else ".jpeg"
     output_path_with_extension = re.sub(r'\.jpeg|\.png', file_extension, output_path, flags=re.IGNORECASE)
     if quality == 'HD':
         url = re.sub(r"width=\d{3,4}", "original=true", url)
     
-    async with httpx.AsyncClient() as client:
-        async with semaphore:
-            try:
-                
+    async with semaphore:
+        try:
+            async with httpx.AsyncClient() as client:
                 response = await client.get(url, timeout=timeout_value, headers=headers)
-                response.raise_for_status()  # Ensures that the HTTP request was successful
+                response.raise_for_status()
                 total_size = int(response.headers.get('content-length', 0))
                 progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, desc=f"Downloading {output_path_with_extension}")
 
@@ -70,28 +93,27 @@ async def download_image(url, output_path, timeout_value, quality='SD'):
                         progress_bar.update(len(chunk))
                         file.write(chunk)
                 progress_bar.close()
-                download_stats["downloaded"].append(output_path_with_extension)  # Recording as successfully downloaded
-                return True
-            except Exception as e:
-                reason = str(e)
-                if isinstance(e, httpx.RequestError) or isinstance(e, httpx.ConnectError):
-                    reason = "Network error while downloading the image. Please check your internet connection and try again"
-                elif isinstance(e, httpx.HTTPStatusError):
-                    reason = f"Error downloading the image. Server response: {e.response.status_code} Please try again later."
-                elif isinstance(e, ConnectionResetError):
-                    reason = "The connection to the server was closed unexpectedly. This could be a temporary network problem. Please try again later"
-                download_stats["skipped"].append((url, reason))  # Recording of the skip reason
-                print(f"An unexpected error has occurred. {reason}")
-                return False
+                logger_cid.info(f"Successfully downloaded: {output_path_with_extension}")
+                return True, None
+        except Exception as e:
+            reason = str(e)
+            if isinstance(e, httpx.RequestError) or isinstance(e, httpx.ConnectError):
+                reason = "Network error while downloading the image. Please check your internet connection and try again"
+            elif isinstance(e, httpx.HTTPStatusError):
+                reason = f"Error downloading the image. Server response: {e.response.status_code} Please try again later."
+            elif isinstance(e, ConnectionResetError):
+                reason = "The connection to the server was closed unexpectedly. This could be a temporary network problem. Please try again later"
+            logger_cid.error(f"Error downloading {url}: {reason}")
+            return False, reason
 
 
 # Async function to write meta data to a text file. If no meta data is available, the URL to the image is written to the txt file
 async def write_meta_data(meta, output_path, image_id, username):
-    if not meta:
+    if not meta or all(value == '' for value in meta.values()):
         output_path = output_path.replace(".txt", "_no_meta.txt")
         url = f"https://civitai.com/images/{image_id}?period=AllTime&periodMode=published&sort=Newest&view=feed&username={username}&withTags=false"
         with open(output_path, "w", encoding='utf-8') as file:
-            file.write(f"No meta data available for this image.\nURL: {url}\n")
+            file.write(f"No metadata available for this image.\nURL: {url}\n")
     else:
         with open(output_path, "w", encoding='utf-8') as file:
             for key, value in meta.items():
@@ -127,10 +149,8 @@ def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=
         image_key = f"{image_id}_{quality}"
         current_date = datetime.now().strftime("%Y-%m-%d - %H:%M")
 
-        # Merge tags using a generator expression
         merged_tags = list(set(downloaded_images.get(image_key, {}).get("tags", [])) | set(tags or []))
         
-        # Create a new entry for the image
         downloaded_images[image_key] = {
             "path": image_path,
             "quality": quality,
@@ -141,6 +161,8 @@ def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=
         json_data_string = json.dumps(downloaded_images[image_key], indent=4)
         with open(TRACKING_JSON_FILE, "w") as file:
             json.dump(downloaded_images, file, indent=4)
+        
+        logger_cid.info(f"Marked as downloaded: {image_id} at {image_path}")    
 
 
 SOURCE_MISSING_MESSAGE_SHOWN = False
@@ -163,19 +185,6 @@ def manual_copy(src, dst):
             print(f"Source file {src} does not exist. Copy skipped.")
             SOURCE_MISSING_MESSAGE_SHOWN = True
         return False # Also returns False if the source file does not exist
-
-
-# Remove images and metadata files from the source directory.
-def clear_source_directory(model_dir):
-    files_to_remove = [f for f in os.listdir(model_dir) if f.endswith(('.jpeg', '.png')) or f.endswith('_meta.txt')]
-    for file in files_to_remove:
-        file_path = os.path.join(model_dir, file)
-        try:
-            os.remove(file_path)
-        except Exception as e:
-            print(f"Failed to remove file {file_path}. Error: {e}")
-
-
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
     # Replace %20 with a space
@@ -229,58 +238,90 @@ def move_to_invalid_meta(src, model_dir):
 
 def sort_images_by_model_name(model_dir):
     global NEW_IMAGES_DOWNLOADED
+    no_meta_dir = os.path.join(model_dir, 'no_meta_data')
+    os.makedirs(no_meta_dir, exist_ok=True)
+    
     if os.path.exists(model_dir) and os.listdir(model_dir):
-        # List all meta files in the directory
-        meta_files = [f for f in os.listdir(model_dir) if f.endswith('_meta.txt')]
+        all_files = os.listdir(model_dir)
+        meta_files = [f for f in all_files if f.endswith('_meta.txt') or f.endswith('_meta_no_meta.txt')]
         
-        # Treat files with and without valid metadata separately
         for meta_file in meta_files:
-            model_name_found = False
             with open(os.path.join(model_dir, meta_file), 'r', encoding='utf-8') as file:
-                for line in file:
-                    if "Model:" in line:
-                        model_name = line.split(":")[1].strip()
-                        model_name_found = True
-                        break
-                    
-            if model_name_found:
-                model_name = clean_and_shorten_path(model_name)  # Clean the model name
-                target_dir = os.path.join(model_dir, model_name)
-                os.makedirs(target_dir, exist_ok=True)
-                process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
-            else:
-                # If no model name was found or the metadata is invalid
-                process_image_and_meta(model_dir, meta_file, model_dir, valid_meta=False)
+                content = file.read()
+                base_name = meta_file.replace('_meta_no_meta.txt', '').replace('_meta.txt', '').strip()
+                
+                if "No metadata available for this image." in content or meta_file.endswith('_meta_no_meta.txt'):   
+                    image_moved = False
+                    for ext in ['.jpeg', '.png']:
+                        image_path = os.path.join(model_dir, base_name + ext)                        
+                        if os.path.exists(image_path):
+                            shutil.move(image_path, os.path.join(no_meta_dir, os.path.basename(image_path)))                            
+                            image_moved = True
+                            break
+                    if not image_moved:
+                        logger_cid.info(f"No image found for metadata file {meta_file} (This is expected for images that didn't pass the prompt check)")
+                    shutil.move(os.path.join(model_dir, meta_file), os.path.join(no_meta_dir, meta_file))                    
+                else:
+                    model_name_found = False
+                    for line in content.split('\n'):
+                        if "Model:" in line:
+                            model_name = line.split(":")[1].strip()
+                            model_name_found = True                            
+                            break
+                
+                    if model_name_found:
+                        model_name = clean_and_shorten_path(model_name)
+                        target_dir = os.path.join(model_dir, model_name)
+                        os.makedirs(target_dir, exist_ok=True)                        
+                        process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
+                    else:                        
+                        process_image_and_meta(model_dir, meta_file, model_dir, valid_meta=False)
         
-        clear_source_directory(model_dir)
-        # Set NEW_IMAGES_DOWNLOADED to True when new images have been successfully sorted
+        # Only check for orphaned images among those that were actually downloaded
+        downloaded_images_in_dir = [f for f in all_files if f.endswith(('.jpeg', '.png')) and os.path.join(model_dir, f) in download_stats["downloaded"]]
+        for file in downloaded_images_in_dir:
+            base_name = file.rsplit('.', 1)[0]
+            if not any(meta for meta in meta_files if meta.startswith(base_name)):
+                logger_cid.warning(f"Orphaned image found: {os.path.join(model_dir, file)}")
+                os.remove(os.path.join(model_dir, file))
+        
         if meta_files:
             NEW_IMAGES_DOWNLOADED = True
 
+
 def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
-    base_name = meta_file.replace('_meta.txt', '')
+    base_name = meta_file.replace('_meta.txt', '').replace('_meta_no_meta.txt', '')
     image_moved = False
     new_image_path = None
 
-    # Try to find and move/copy the corresponding image
-    for extension in ['.jpeg', '.png']:
+    extensions = ['.jpeg', '.png']
+    for extension in extensions:
         image_path = os.path.join(model_dir, base_name + extension)
         if os.path.exists(image_path):
-            if valid_meta:
-                # Attempts to copy the image if the metadata is valid
-                new_image_path = manual_copy(image_path, os.path.join(target_dir, os.path.basename(image_path)))
-            else:
-                # Move the image to the invalid_meta folder if the metadata is invalid
-                new_image_path = move_to_invalid_meta(image_path, model_dir)
-            image_moved = True if new_image_path else False
+            try:
+                if valid_meta:
+                    new_image_path = os.path.join(target_dir, os.path.basename(image_path))
+                    shutil.move(image_path, new_image_path)
+                else:
+                    new_image_path = move_to_invalid_meta(image_path, model_dir)
+                image_moved = True
+                logger_cid.info(f"Moved image {image_path} to {new_image_path}")
+            except Exception as e:
+                logger_cid.error(f"Error moving image {image_path}: {e}")
             break
 
-    if image_moved:
-        new_meta_path = manual_copy(os.path.join(model_dir, meta_file), os.path.join(target_dir, os.path.basename(meta_file))) if valid_meta else move_to_invalid_meta(os.path.join(model_dir, meta_file), model_dir)
-        return new_image_path, new_meta_path
-    else:
+    if not image_moved:
+        logger_cid.info(f"No image found for metadata file {meta_file} (This is expected for images that didn't pass the prompt check)")
         return None, None
 
+    meta_path = os.path.join(model_dir, meta_file)
+    if valid_meta:
+        new_meta_path = os.path.join(target_dir, meta_file)
+        shutil.move(meta_path, new_meta_path)
+    else:
+        new_meta_path = move_to_invalid_meta(meta_path, model_dir)
+    
+    return new_image_path, new_meta_path
     
 
 visited_pages = set()
@@ -296,7 +337,7 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
                     response = await client.get(base_url, headers=headers)
                     if response.status_code == 200:
                         data = response.json()
-                        items = data.get('items', [])
+                        items = data.get('items', [])                        
                         if items:  # If items list is not empty
                             for model in items:
                                 model_id.add(model['id'])
@@ -307,12 +348,12 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
                         nextPage = metadata.get('nextPage', None)
                         base_url = nextPage if nextPage else None
                     else:
-                        logger.error(f"Server response: {response.status_code} for URL: {base_url}")
+                        logger_cid.error(f"Server response: {response.status_code} for URL: {base_url}")
                         print(f"Unexpected server response: {response.status_code}. Please try again later.")
                         failed_search_requests.append(base_url)
                         break
                 except httpx.RequestError as e:
-                    logger.exception(f"Request error occurred while fetching models for tag '{tag}': {e}")
+                    logger_cid.exception(f"Request error occurred while fetching models for tag '{tag}': {e}")
                     print("A connection error occurred. Please check your internet connection and try again.")
                     failed_search_requests.append(base_url)
                     break
@@ -322,10 +363,12 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
 tag_model_mapping = {}
 
 async def download_images_for_model_with_tag_check(model_ids, option_folder, timeout_value, quality='SD', tag_to_check=None, tag_dir_name=None, sanitized_tag_dir_name=None, disable_prompt_check=False, allow_redownload=2):
-    global NEW_IMAGES_DOWNLOADED
+    global NEW_IMAGES_DOWNLOADED, download_stats
     failed_urls = []
     images_without_meta = 0
     tasks = []
+    total_api_items = 0
+    total_downloaded_items = 0
 
     if tag_to_check is None:
         tag_to_check = tag_dir_name
@@ -336,7 +379,7 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
 
         while url:
             if url in visited_pages:
-                print(f"URL {url} already visited. Ending loop.")
+                logger_cid.info(f"URL {url} already visited. Ending loop.")
                 break
             visited_pages.add(url)
             async with httpx.AsyncClient() as client:
@@ -344,12 +387,10 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
                     try:
                         response = await client.get(url, timeout=timeout_value, headers=headers)
                         if response.status_code == 200:
-                            try:
-                                data = response.json()
-                            except json.JSONDecodeError as e:
-                                print(f"Invalid JSON data: {str(e)}")
-                                break
+                            data = response.json()
                             items = data.get('items', [])
+                            total_api_items += len(items)
+                            
                             # Create directory for model ID
                             model_name = "unknown_model"
                             if items and isinstance(items[0], dict):
@@ -366,59 +407,46 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
                             model_dir = os.path.join(tag_dir, f"model_{(model_id)}")
                             os.makedirs(model_dir, exist_ok=True)
 
-
                             for item in items:
                                 item_meta = item.get("meta") if item else None
                                 prompt = item_meta.get("prompt", "").replace(" ", "_") if isinstance(item_meta, dict) else ""
-                                if disable_prompt_check:
-                                    # Download the image (no prompt check)
+                                if disable_prompt_check or (tag_to_check and all(word in prompt.lower() for word in tag_to_check.lower().split("_"))):
                                     image_id = item['id']
                                     image_url = item['url']
                                     image_extension = ".png" if quality == 'HD' else ".jpeg"
                                     image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
 
-                                    # Check if the image has already been downloaded
                                     if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
                                         continue
 
                                     task = download_image(image_url, image_path, timeout_value, quality)
                                     tasks.append(task)
                                 else:
-                                    tag_words = tag_to_check.lower().split("_")
-                                    if all(word in prompt.lower() for word in tag_words):
-                                        # Download the image (prompt check passed)
-                                        image_id = item['id']
-                                        image_url = item['url']
-                                        image_extension = ".png" if quality == 'HD' else ".jpeg"
-                                        image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
-                                
-                                        # Check if the image has already been downloaded
-                                        if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
-                                            continue
-                                        task = download_image(image_url, image_path, timeout_value, quality)
-                                        tasks.append(task)
-                                    else:
-                                        continue
+                                    logger_cid.info(f"Skipping image {item['id']} as it doesn't pass the prompt check")
 
                             # This will run all download tasks asynchronously
                             download_results = await asyncio.gather(*tasks)
                             tasks = []  # Reset the tasks list after gathering the results
 
                             # Check the results and mark the downloaded images
-                            for idx, download_success in enumerate(download_results):
+                            for idx, (download_success, reason) in enumerate(download_results):
                                 image_id = items[idx]['id']
                                 if download_success:
                                     NEW_IMAGES_DOWNLOADED = True
+                                    total_downloaded_items += 1
                                     image_path = os.path.join(model_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
                                     tags = [tag_to_check] if tag_to_check else []
-                                    mark_image_as_downloaded(str(image_id), image_path, quality, tags=tags, url=image_url)
+                                    mark_image_as_downloaded(str(image_id), image_path, quality, tags=tags, url=items[idx]['url'])
+                                    download_stats["downloaded"].append(image_path)
                                 else:
-                                    logger.error(f"Failed to download image {image_id}")
+                                    logger_cid.error(f"Failed to download image {image_id}: {reason}")
+                                    download_stats["skipped"].append((items[idx]['url'], reason))
 
                                 meta_output_path = os.path.join(model_dir, f"{image_id}_meta.txt")
                                 await write_meta_data(items[idx].get("meta"), meta_output_path, image_id, items[idx].get('username', 'unknown'))
                                 if not items[idx].get("meta"):
                                     images_without_meta += 1
+
                             sort_images_by_model_name(model_dir)
                             metadata = data['metadata']
                             next_page = metadata.get('nextPage')
@@ -427,23 +455,12 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
                                 await asyncio.sleep(3)  # Add a delay between requests
                             else:
                                 break
-                    except httpx.TimeoutException as e:
-                        print(f"Request timed out: {str(e)}")
-                        failed_urls.append(url)  # Append the failed URL to the list
-                        logging.info(f"URL hinzugefügt zu failed_urls: {url}")
-                        continue
-                    except httpx.HTTPError as e:
-                        print(f"HTTP error occurred: {str(e)}")
-                        failed_urls.append(url)  # Append the failed URL to the list
-                        logging.info(f"URL hinzugefügt zu failed_urls: {url}")
-                        continue
                     except Exception as e:
-                        print(f"An error occurred: {str(e)}")
-                        failed_urls.append(url)  # Append the failed URL to the list
-                        logging.info(f"URL hinzugefügt zu failed_urls: {url}")
+                        logger_cid.error(f"Error processing URL {url}: {str(e)}")
+                        failed_urls.append(url)
                         continue
 
-    return tasks, failed_urls, images_without_meta, sanitized_tag_dir_name
+    return tasks, failed_urls, images_without_meta, sanitized_tag_dir_name, total_api_items, total_downloaded_items
 
 
 def sort_images_by_tag(option_folder, tag_model_mapping):
@@ -543,8 +560,20 @@ async def is_valid_model_version_id(model_version_id):
             return False, f"Unexpected error: {str(e)}"
 
 
+def get_url_for_identifier(identifier, identifier_type):
+    base_url = "https://civitai.com/api/v1/images"
+    if identifier_type == 'model':
+        return f"{base_url}?modelId={str(identifier)}&nsfw=X"
+    elif identifier_type == 'modelVersion':
+        return f"{base_url}?modelVersionId={str(identifier)}&nsfw=X"
+    elif identifier_type == 'username':
+        return f"{base_url}?username={identifier.strip()}&nsfw=X"
+    else:
+        raise ValueError("Invalid identifier_type. Should be 'model', 'modelVersion', or 'username'.")
+
+
 async def download_images(identifier, option_folder, identifier_type, timeout_value, quality='SD', allow_redownload=2):
-    global NEW_IMAGES_DOWNLOADED
+    global NEW_IMAGES_DOWNLOADED, download_stats
     valid, error_message = True, None
     if identifier_type == 'username':
         valid, error_message = await is_valid_username(identifier)
@@ -553,24 +582,30 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
     elif identifier_type == 'modelVersion':
         valid, error_message = await is_valid_model_version_id(identifier)
     if not valid:
-        print(f"Skipping: {error_message}")
+        logger_cid.warning(f"Skipping: {error_message}")
         failed_identifiers.append((identifier_type, identifier))
-        return [], 0
-    if identifier_type == 'model':
-        url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
-    elif identifier_type == 'modelVersion':
-        url = f"{base_url}?modelVersionId={str(identifier)}&nsfw=X"
-    elif identifier_type == 'username':
-        url = f"{base_url}?username={identifier.strip()}&nsfw=X"
-    else:
-        raise ValueError("Invalid identifier_type. Should be 'model', 'modelVersion', or 'username'.")
+        return [], 0, 0, 0
 
+    url = get_url_for_identifier(identifier, identifier_type)
     failed_urls = []
     images_without_meta = 0
+    total_items = 0
+    total_downloaded = 0
+
+    # Define dir_name here, outside the while loop
+    if identifier_type in ['model', 'modelVersion']:
+        dir_name = os.path.join(option_folder, f"{identifier_type}_{identifier}")
+    elif identifier_type == 'username':
+        dir_name = os.path.join(option_folder, identifier.strip())
+    else:
+        logger_cid.error(f"Invalid identifier_type: {identifier_type}")
+        return [], 0, 0, 0
+
+    os.makedirs(dir_name, exist_ok=True)
 
     while url:
         if url in visited_pages:
-            print(f"URL {url} already visited. Ending loop.")
+            logger_cid.info(f"URL {url} already visited. Ending loop.")
             break
         visited_pages.add(url)     
         async with httpx.AsyncClient() as client:
@@ -578,24 +613,10 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
                 try:
                     response = await client.get(url, timeout=timeout_value)
                     if response.status_code == 200:
-                        try:
-                            data = response.json()
-                        except json.JSONDecodeError as e:
-                            print(f"Invalid JSON data: {str(e)}")
-                            break
-
+                        data = response.json()
                         items = data.get('items', [])
-
-                        # Create directory for model ID, model version ID, or username
-                        if identifier_type in ['model', 'modelVersion']:
-                            model_name = "unknown_model"
-                            if items and isinstance(items[0], dict):
-                                model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
-                            dir_name = os.path.join(option_folder, f"{identifier_type}_{identifier}")
-                        elif identifier_type == 'username':
-                            dir_name = os.path.join(option_folder, identifier.strip())
-
-                        os.makedirs(dir_name, exist_ok=True)
+                        logger_cid.info(f"Received {len(items)} items from API for {identifier_type} {identifier}")
+                        total_items += len(items)
 
                         tasks = []
                         for item in items:
@@ -604,23 +625,24 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
                             image_extension = ".png" if quality == 'HD' else ".jpeg"
                             image_path = os.path.join(dir_name, f"{image_id}{image_extension}")
 
-                            # Check if the image has already been downloaded
                             if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
                                 continue
 
                             task = download_image(image_url, image_path, timeout_value, quality)
                             tasks.append(task)
 
-                        # This will run all download tasks asynchronously
                         download_results = await asyncio.gather(*tasks)
+                        total_downloaded += sum(1 for result, _ in download_results if result)
 
-                        # Check the results and mark the downloaded images
-                        for idx, download_success in enumerate(download_results):
+                        for idx, (download_success, reason) in enumerate(download_results):
                             image_id = items[idx]['id']
                             if download_success:
                                 NEW_IMAGES_DOWNLOADED = True
                                 image_path = os.path.join(dir_name, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
                                 mark_image_as_downloaded(str(image_id), image_path, quality)
+                                download_stats["downloaded"].append(image_path)
+                            else:
+                                download_stats["skipped"].append((items[idx]['url'], reason))
                             
                             meta_output_path = os.path.join(dir_name, f"{image_id}_meta.txt")
                             await write_meta_data(items[idx].get("meta"), meta_output_path, image_id, items[idx].get('username', 'unknown'))
@@ -632,20 +654,19 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
 
                         if next_page:
                             url = next_page
-                            await asyncio.sleep(3)  # Add a delay between requests
+                            await asyncio.sleep(3)
                         else:
                             break
-                except httpx.TimeoutException as e:
-                    print(f"Request timed out: {str(e)}")
+                except Exception as e:
+                    logger_cid.error(f"Error processing URL {url}: {str(e)}")
+                    failed_urls.append(url)
                     continue
 
-    if identifier_type in ['model', 'modelVersion']:
-        # Sorting the images by model name after downloading them
-        sort_images_by_model_name(dir_name)
-    elif identifier_type == 'username':
+    if identifier_type in ['model', 'modelVersion', 'username']:
         sort_images_by_model_name(dir_name)
 
-    return failed_urls, images_without_meta
+    logger_cid.info(f"Total items from API: {total_items}, Total downloaded: {total_downloaded}")
+    return failed_urls, images_without_meta, total_items, total_downloaded
 
 
 def print_download_statistics():
@@ -667,96 +688,61 @@ def print_download_statistics():
 
 # Main async function
 async def main():
-    try:
-        global downloaded_images
-        downloaded_images = load_downloaded_images()
+    global downloaded_images, download_stats
+    downloaded_images = load_downloaded_images()
+    download_stats = {
+        "downloaded": [],
+        "skipped": [],
+    }
 
-        # Universal user inputs for timeout and quality
-        timeout_input = input("Enter timeout value (in seconds): ")
-        if timeout_input.isdigit() and int(timeout_input) > 0:
-            timeout_value = int(timeout_input)
-        else:
-            print("Invalid timeout value. Using default value of 60 seconds.")
-            timeout_value = 60
 
-        quality_choice = input("Choose image quality (1 for SD, 2 for HD): ")
-        if quality_choice == '2':
-            quality = 'HD'
-        elif quality_choice == '1':
-            quality = 'SD'
-        else:
-            print("Invalid quality choice. Using default quality SD.")
-            quality = 'SD'
+    # Check if we're in mixed mode
+    provided_args = [arg for arg in vars(args) if getattr(args, arg) is not None]
+    if provided_args and len(provided_args) < len(vars(args)):
+        print("Mixed mode detected. Some arguments provided via command-line, others will be prompted.")
+        logger_cid.info("Running in mixed mode. Some arguments provided via command-line, others will be prompted.")
 
-        allow_redownload_choice = input("Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: ")
-        if allow_redownload_choice == '1':
-            allow_redownload = 1
-        elif allow_redownload_choice == '2' or allow_redownload_choice.strip() == '':
-            allow_redownload = 2
-        else:
-            print("Invalid choice. Using default value (2 - No).")
-            allow_redownload = 2
+    # Check for mismatched arguments
+    check_mismatched_arguments()
 
-        failed_search_requests = []
-        failed_urls = []
-        images_without_meta = 0
+    timeout_value = get_timeout_value()
+    quality = get_quality()
+    allow_redownload = get_redownload_option()
 
-        # Extended choice options including tag search and modelVersionId
-        choice = input("Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID): ")
-        tasks = []
+    failed_search_requests = []
+    failed_urls = []
+    images_without_meta = 0
+    total_api_items = 0
+    total_downloaded_items = 0
 
-        if choice == "3":
-            tags_input = input("Enter tags (comma-separated): ")
-            tags = [tag.strip().replace(" ", "_") for tag in tags_input.split(',')]
-            disable_prompt_check = input("Disable prompt check? (y/n): ").lower() in ['y', 'yes']
+    choice = get_mode_choice()
+    tasks = []
 
-            option_folder = create_option_folder('Model_Tag_Search', output_dir)
+    if choice == "1":
+        usernames = get_usernames()
+        option_folder = create_option_folder('Username_Search', output_dir)
+        tasks.extend([download_images(username.strip(), option_folder, 'username', timeout_value, quality, allow_redownload) for username in usernames])
 
-            for tag in tags:
-                sanitized_tag_dir_name = tag.replace(" ", "_")
-                model_ids = await search_models_by_tag(tag.replace("_", "%20"), failed_search_requests)
-                tag_to_check = None if disable_prompt_check else tag
-                tasks_for_tag, failed_urls_for_tag, images_without_meta_for_tag, sanitized_tag_dir_name_for_tag = await download_images_for_model_with_tag_check(model_ids, option_folder, timeout_value, quality, tag_to_check, tag, sanitized_tag_dir_name, disable_prompt_check, allow_redownload)
-                tasks.extend(tasks_for_tag)
-                failed_urls.extend(failed_urls_for_tag)
-                images_without_meta += images_without_meta_for_tag
+    elif choice == "2":
+        model_ids = get_model_ids()
+        option_folder = create_option_folder('Model_ID_Search', output_dir)
+        tasks.extend([download_images(model_id.strip(), option_folder, 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
 
-        elif choice == "1":
-            usernames = input("Enter usernames (comma-separated): ").split(",")
-            option_folder = create_option_folder('Username_Search', output_dir)
-            tasks.extend([download_images(username.strip(), option_folder, 'username', timeout_value, quality, allow_redownload) for username in usernames])
+    elif choice == "3":
+        tags = get_tags()
+        disable_prompt_check = get_disable_prompt_check()
+        option_folder = create_option_folder('Model_Tag_Search', output_dir)
 
-        elif choice == "2":
-            option_folder = create_option_folder('Model_ID_Search', output_dir)
-            while True:
-                model_ids_input = input("Enter model IDs (comma-separated): ")
-                model_ids = model_ids_input.split(",")
-                if all(model_id.strip().isdigit() for model_id in model_ids):
-                    tasks.extend([download_images(model_id.strip(), option_folder, 'model', timeout_value, quality, allow_redownload) for model_id in model_ids])
-                    break
-                else:
-                    print("Invalid input. Please enter only numeric model IDs.")
-
-        elif choice == "4":
-            option_folder = create_option_folder('Model_Version_ID_Search', output_dir)
-            while True:
-                model_version_ids_input = input("Enter model version IDs (comma-separated): ")
-                model_version_ids = model_version_ids_input.split(",")
-                if all(model_version_id.strip().isdigit() for model_version_id in model_version_ids):
-                    tasks.extend([download_images(model_version_id.strip(), option_folder, 'modelVersion', timeout_value, quality, allow_redownload) for model_version_id in model_version_ids])
-                    break
-                else:
-                    print("Invalid input. Please enter only numeric model version IDs.")
-        else:
-            print("Invalid choice!")
-            return
-
-        # Execute all collected tasks
-        results = await asyncio.gather(*tasks)
-
-        # Extract failed_urls and images_without_meta from the results
-        failed_urls.extend([url for result in results for url in result[0]])
-        images_without_meta += sum([count for result in results for count in result[1:]])
+        for tag in tags:
+            sanitized_tag_dir_name = tag.replace(" ", "_")
+            model_ids = await search_models_by_tag(tag.replace("_", "%20"), failed_search_requests)
+            tag_to_check = None if disable_prompt_check else tag
+            tasks_for_tag, failed_urls_for_tag, images_without_meta_for_tag, sanitized_tag_dir_name_for_tag, api_items, downloaded_items = await download_images_for_model_with_tag_check(model_ids, option_folder, timeout_value, quality, tag_to_check, tag, sanitized_tag_dir_name, disable_prompt_check, allow_redownload)
+            tasks.extend(tasks_for_tag)
+            failed_urls.extend(failed_urls_for_tag)
+            images_without_meta += images_without_meta_for_tag
+            total_api_items += api_items
+            total_downloaded_items += downloaded_items
 
         # Sort images into tag-related folders
         sort_images_by_tag(option_folder, tag_model_mapping)
@@ -764,32 +750,165 @@ async def main():
         for tag, model_ids in tag_model_mapping.items():
             write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mapping)
 
-        if failed_urls:
-            print("Retrying failed URLs...")
-            for url in failed_urls:
-                await download_image(url, option_folder, timeout_value=timeout_value, quality=quality)
+    elif choice == "4":
+        model_version_ids = get_model_version_ids()
+        option_folder = create_option_folder('Model_Version_ID_Search', output_dir)
+        tasks.extend([download_images(model_version_id.strip(), option_folder, 'modelVersion', timeout_value, quality, allow_redownload) for model_version_id in model_version_ids])
 
-        # Attempt to retry failed search requests
-        if failed_search_requests:
-            print("Retrying failed search requests...")
-            for url in failed_search_requests:
-                tag = url.split("tag=")[-1]
-                await search_models_by_tag(tag, [])
+    else:
+        logger_cid.error("Invalid choice!")
+        return
 
-        if images_without_meta > 0:
-            print(f"{images_without_meta} images have no meta data.")
+    # Execute all collected tasks
+    results = await asyncio.gather(*tasks)
 
-        print_download_statistics()
+    # Extract failed_urls, images_without_meta, and download statistics from the results
+    for result in results:
+        failed_urls.extend(result[0])
+        images_without_meta += result[1]
+        total_api_items += result[2]
+        total_downloaded_items += result[3]
 
-    except Exception as e:
-        logger.exception(f"An unexpected error occurred: {str(e)}")
-        raise
 
-asyncio.run(main())
+    for tag, model_ids in tag_model_mapping.items():
+        write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mapping)
 
-if failed_identifiers:
-    print("Failed identifiers:")
-    for id_type, id_value in failed_identifiers:
-        print(f"{id_type}: {id_value}")
+    if failed_urls:
+        logger_cid.info("Retrying failed URLs...")
+        for url in failed_urls:
+            await download_image(url, option_folder, timeout_value=timeout_value, quality=quality)
 
-print("Image download completed.")
+    # Attempt to retry failed search requests
+    if failed_search_requests:
+        logger_cid.info("Retrying failed search requests...")
+        for url in failed_search_requests:
+            tag = url.split("tag=")[-1]
+            await search_models_by_tag(tag, [])
+
+    if images_without_meta > 0:
+        logger_cid.info(f"{images_without_meta} images have no meta data.")
+
+    logger_cid.info(f"Total API items: {total_api_items}, Total downloaded: {total_downloaded_items}")
+    print(f"Total API items: {total_api_items}, Total downloaded: {total_downloaded_items}")
+    print_download_statistics()
+
+# Helper functions for main
+def check_mismatched_arguments():
+    if args.mode:
+        if args.mode == 1 and (args.model_id or args.model_version_id or args.tags):
+            print("Warning: --model_id, --model_version_id, and --tags are not used in username mode. These arguments will be ignored.")
+            logger_cid.warning("Warning: --model_id, --model_version_id, and --tags are not used in username mode. These arguments will be ignored.")
+        elif args.mode == 2 and (args.username or args.model_version_id or args.tags):
+            print("Warning: --username, --model_version_id, and --tags are not used in model ID mode. These arguments will be ignored.")
+            logger_cid.warning("Warning: --username, --model_version_id, and --tags are not used in model ID mode. These arguments will be ignored.")
+        elif args.mode == 3 and (args.username or args.model_id or args.model_version_id):
+            print("Warning: --username, --model_id, and --model_version_id are not used in tag search mode. These arguments will be ignored.")
+            logger_cid.warning("Warning: --username, --model_id, and --model_version_id are not used in tag search mode. These arguments will be ignored.")
+        elif args.mode == 4 and (args.username or args.model_id or args.tags):
+            print("Warning: --username, --model_id, and --tags are not used in model version ID mode. These arguments will be ignored.")
+            logger_cid.warning("Warning: --username, --model_id, and --tags are not used in model version ID mode. These arguments will be ignored.")
+
+def get_timeout_value():
+    if args.timeout:
+        return args.timeout
+    else:
+        timeout_input = input("Enter timeout value (in seconds): ")
+        if timeout_input.isdigit() and int(timeout_input) > 0:
+            return int(timeout_input)
+        else:
+            logger_cid.warning("Invalid timeout value. Using default value of 60 seconds.")
+            return 60
+
+def get_quality():
+    if args.quality:
+        return 'HD' if args.quality == 2 else 'SD'
+    else:
+        quality_choice = input("Choose image quality (1 for SD, 2 for HD): ")
+        if quality_choice == '2':
+            return 'HD'
+        elif quality_choice == '1':
+            return 'SD'
+        else:
+            logger_cid.warning("Invalid quality choice. Using default quality SD.")
+            return 'SD'
+
+def get_redownload_option():
+    if args.redownload:
+        return args.redownload
+    else:
+        allow_redownload_choice = input("Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: ")
+        if allow_redownload_choice == '1':
+            return 1
+        elif allow_redownload_choice == '2' or allow_redownload_choice.strip() == '':
+            return 2
+        else:
+            logger_cid.warning("Invalid choice. Using default value (2 - No).")
+            return 2
+
+def get_mode_choice():
+    if args.mode:
+        return str(args.mode)
+    else:
+        return input("Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID): ")
+
+def get_usernames():
+    if args.username:
+        return [args.username]
+    else:
+        return input("Enter username: ").split(",")
+
+def get_model_ids():
+    if args.model_id:
+        return [args.model_id]
+    else:
+        while True:
+            model_ids_input = input("Enter model ID: ")
+            model_ids = model_ids_input.split(",")
+            if all(model_id.strip().isdigit() for model_id in model_ids):
+                return model_ids
+            else:
+                logger_cid.warning("Invalid input. Please enter only numeric model IDs.")
+
+def get_tags():
+    if args.tags:
+        return [tag.strip().replace(" ", "_") for tag in args.tags.split(',')]
+    else:
+        tags_input = input("Enter tags (comma-separated): ")
+        return [tag.strip().replace(" ", "_") for tag in tags_input.split(',')]
+
+def get_disable_prompt_check():
+    if args.disable_prompt_check is not None:
+        return args.disable_prompt_check.lower() == 'y'
+    else:
+        return input("Disable prompt check? (y/n): ").lower() in ['y', 'yes']
+
+def get_model_version_ids():
+    if args.model_version_id:
+        return [args.model_version_id]
+    else:
+        while True:
+            model_version_ids_input = input("Enter model version ID: ")
+            model_version_ids = model_version_ids_input.split(",")
+            if all(model_version_id.strip().isdigit() for model_version_id in model_version_ids):
+                return model_version_ids
+            else:
+                logger_cid.warning("Invalid input. Please enter only numeric model version IDs.")
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    
+    if is_command_line_mode():
+        print("Running in command-line mode.")
+        logger_cid.info("Running in command-line mode")
+    else:
+        print("Running in interactive mode.")
+        logger_cid.info("Running in interactive mode")
+    
+    asyncio.run(main())
+
+    if failed_identifiers:
+        logger_cid.warning("Failed identifiers:")
+        for id_type, id_value in failed_identifiers:
+            logger_cid.warning(f"{id_type}: {id_value}")
+
+    logger_cid.info("Image download completed.")
