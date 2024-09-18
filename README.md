@@ -20,10 +20,11 @@ pip install -r requirements.txt
 ```
 python civit_image_downloader.py
 ```
-The script  will ask you to 
+## Interactive Mode
+the script will ask you to:
 
-          Enter timeout value (in seconds): 
-          Choose image quality (1 for SD, 2 for HD): 
+          Enter timeout value (in seconds) [default: 60]: 
+          Choose image quality (1 for SD, 2 for HD) [default: 1]: 
           Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: 
           Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID):
           Mode 3 
@@ -31,25 +32,57 @@ The script  will ask you to
           Disable prompt check? (y/n):
 
                         
-If you leave the timeout value emtpy it will use the default Timeout value 60 sec. <br /> 
-If you leave the image quality value emtpy it will use the default image quality Value SD.
+If you just hit enter it will use the Default values of that Option if it has a default value.  <br /> 
+ <br /> 
+## Command-Line Mode
+arguments filled with the default values as an example<br /> 
+Username Mode
+```
+--timeout=60  --quality=1 --redownload=2  --mode=1   --username=
+```
+Model ID Mode
+```
+--timeout=60  --quality=1 --redownload=2  --mode=2   --model_id=
+```
+Tag search Mode 
+```
+--timeout=60  --quality=1 --redownload=2  --mode=3   --tags=  --disable_prompt_check=
+```
+Model version ID Mode
+```
+--timeout=60  --quality=1 --redownload=2  --mode=4   --model_version_id=
+```
+ <br /> 
+ <br /> 
+ 
+## Mixed Mode 
+If only some arguments are provided, the script will use the provided options and prompt the user for any missing inputs. <br /> 
+ <br /> 
 
-Optional: 2 or more Items which are separated with a comma
 
-**Folder Structure**  <br /> 
+
+## Folder Structure  <br /> 
 The downloaded files will be organized in the following structure:
 ```
 image_downloads/
 └── Username_Search/
 |   ├── Username/
-│   |   ├── Model1/
-│   |   |   ├── image1.jpeg
-│   |   |   ├── image1.png
-│   |   |   └── details.txt
-│   |   ├── Model2/
-│   |       ├── image1.jpeg
-│   |       ├── image1.png
-│   |       └── details.txt
+│       ├── Model1/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── Model2/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── invalid_meta/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── no_meta_data/
+│           ├── image1.jpeg
+│           ├── image1.png
+│           └── details.txt
 
 ├── Model_ID_Search/
 │   └── Model_ID/
@@ -58,20 +91,36 @@ image_downloads/
 │       |   ├── image1.png
 │       |   └── details.txt
 │       ├── Model2/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── invalid_meta/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── no_meta_data/
 │           ├── image1.jpeg
 │           ├── image1.png
 │           └── details.txt
 
 ├── Model_Version_ID_Search/
-    └── Version_ID/
-        ├── Model1/
-        |   ├── image1.jpeg
-        |   ├── image1.png
-        |   └── details.txt
-        ├── Model2/
-        |   ├── image1.jpeg
-        |   ├── image1.png
-        |   └── details.txt
+│   └── Version_ID/
+│       ├── Model1/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── Model2/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── invalid_meta/
+│       |   ├── image1.jpeg
+│       |   ├── image1.png
+│       |   └── details.txt
+│       ├── no_meta_data/
+│           ├── image1.jpeg
+│           ├── image1.png
+│           └── details.txt
 
 ├── Model_Tag_Search/
 │   └── Searched_tag/
@@ -82,12 +131,81 @@ image_downloads/
 │           |   └── details.txt
 │           └── Searched_tag_summary_YYYYMMDD.csv
 │           ├──Model2/
-            |   ├── image1.jpeg
-            |   ├── image1.png
-            |   └── details.txt
+│           |   ├── image1.jpeg
+│           |   ├── image1.png
+│           |   └── details.txt
+│           └── Searched_tag_summary_YYYYMMDD.csv
+│           ├──invalid_meta/
+│           |   ├── image1.jpeg
+│           |   ├── image1.png
+│           |   └── details.txt
+│           └── Searched_tag_summary_YYYYMMDD.csv
+│           ├──no_meta_data/
+│           |   ├── image1.jpeg
+│           |   ├── image1.png
+│           |   └── details.txt
 │           └── Searched_tag_summary_YYYYMMDD.csv
 ```
 # Update History
+
+## 1.2 New Feature & Update
+
+### Command-Line Parameter Support <br />
+
+This update introduces support for three different startup modes.<br />
+
+Fully Interactive Mode: If no command-line arguments are provided, the script will prompt the user for all required inputs interactively, as before.<br />
+
+Fully Command-Line Mode: If all necessary arguments are supplied via the command line, the script will execute without any prompts, offering a streamlined experience for advanced users.<br />
+
+Mixed Mode: If only some arguments are provided, the script will use the provided options and prompt the user for any missing inputs. This allows for a flexible combination of both modes.<br />
+
+The new Feature includes a check for mismatched arguments. If you provide arguments that don't match the selected mode, you will receive a warning message, but the script will continue to run,<br /> 
+ignoring the mismatched arguments and prompting for the required information if necessary.<br />
+
+```
+Warning: --Argument is not used in ... mode. This argument will be ignored.
+```
+## no_meta_data Folder
+All images with no_meta_data are now moved to their own folder named no_meta_data. <br />
+They also have a text file containing the URL of the image, rather than any metadata.<br />
+```
+No metadata available for this image.
+URL: https://civitai.com/images/ID?period=AllTime&periodMode=published&sort=Newest&view=feed&username=Username&withTags=false
+```
+
+
+### Update
+## BUG FIX
+A bug was fixed where the script sometimes did not download all the images provided by the API.<br />
+The logging function was also enhanced. You can now see how many image links the API provided and what the script has downloaded. <br />
+A short version is displayed in your terminal. <br />
+```
+Number of downloaded images: 2
+Number of skipped images: 0
+```
+While more detailed information is available in the log file.<br />
+```
+Date Time - INFO - Running in interactive mode
+Date Time - WARNING - Invalid timeout value. Using default value of 60 seconds.
+Date Time - WARNING - Invalid quality choice. Using default quality SD.
+Date Time - INFO - Received 2 items from API for username Example
+Date Time - INFO - Attempting to download: https://image.civitai.com/247f/width=896/b7354672247f.jpeg
+Date Time - INFO - Attempting to download: https://image.civitai.com/db84/width=1024/45757467b84.jpeg
+Date Time - INFO - Successfully downloaded: image_downloads/Username_Search/Example/2108516.jpeg
+Date Time - INFO - Successfully downloaded: image_downloads/Username_Search/Example/2116132.jpeg
+Date Time - INFO - Marked as downloaded: 21808516 at image_downloads/Username_Search/Example/2108516.jpeg
+Date Time - INFO - Marked as downloaded: 21516132 at image_downloads/Username_Search/Example/2116132.jpeg
+Date Time - INFO - Total items from API: 2, Total downloaded: 2
+Date Time - INFO - 2 images have no meta data.
+Date Time - INFO - Total API items: 2, Total downloaded: 2
+Date Time - INFO - Image download completed.
+
+```
+
+
+
+
 
 ## 1.1 New Feature & Update
 
