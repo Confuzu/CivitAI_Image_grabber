@@ -567,7 +567,7 @@ def get_url_for_identifier(identifier, identifier_type):
     elif identifier_type == 'modelVersion':
         return f"{base_url}?modelVersionId={str(identifier)}&nsfw=X"
     elif identifier_type == 'username':
-        return f"{base_url}?username={identifier.strip()}&nsfw=X"
+        return f"{base_url}?username={identifier.strip()}&nsfw=X&sort=Newest"
     else:
         raise ValueError("Invalid identifier_type. Should be 'model', 'modelVersion', or 'username'.")
 
