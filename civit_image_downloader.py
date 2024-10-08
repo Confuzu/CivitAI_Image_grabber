@@ -39,7 +39,7 @@ headers = {
     "Content-Type": "application/json"
 }
 
-semaphore = asyncio.Semaphore(10)
+semaphore = asyncio.Semaphore(5)
 
 # Directory for image downloads
 output_dir = "image_downloads"
