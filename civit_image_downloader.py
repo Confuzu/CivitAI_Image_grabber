@@ -1,4 +1,5 @@
 import httpx
+import time
 import os
 import asyncio
 import json
@@ -15,7 +16,7 @@ import argparse
 
 # Setup logging
 script_dir = os.path.dirname(os.path.abspath(__file__))
-log_file_path = os.path.join(script_dir, "civit_image_downloader_log_1.2.txt")
+log_file_path = os.path.join(script_dir, "civit_image_downloader_log_1.3.txt")
 logger_cid = logging.getLogger('cid')
 logger_cid.setLevel(logging.DEBUG)
 file_handler_cid = logging.FileHandler(log_file_path, encoding='utf-8')
@@ -27,7 +28,7 @@ logger_cid.addHandler(file_handler_cid)
 
 ##########################################
 # CivitAi API is fixed!#
-# civit_image_downloader_1.2
+# civit_image_downloader_1.3
 ##########################################
 
 
@@ -70,6 +71,24 @@ def create_option_folder(option_name, base_dir):
     return option_dir
 
 allow_redownload = False
+
+
+def safe_move(src, dst, retries=3, delay=0.5):
+    """
+    Attempt to move a file from src to dst.
+    On PermissionError, wait for 'delay' seconds and try again, up to 'retries' times.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.move(src, dst)
+            logger_cid.info(f"Moved file {src} to {dst} on attempt {attempt}")
+            return True
+        except PermissionError as e:
+            logger_cid.warning(f"PermissionError moving {src} to {dst} (attempt {attempt}/{retries}): {e}")
+            time.sleep(delay)
+    logger_cid.error(f"Failed to move {src} to {dst} after {retries} attempts.")
+    return False
+
 
 
 # Function to download an image from the provided URL
@@ -229,7 +248,7 @@ def move_to_invalid_meta(src, model_dir):
     os.makedirs(invalid_meta_dir, exist_ok=True)
     new_dst = os.path.join(invalid_meta_dir, os.path.basename(src))
     try:
-        shutil.move(src, new_dst)
+        safe_move(src, new_dst)
     except Exception as e:
         print(f"Error moving the file {src} to the 'invalid_meta' folder. Error: {e}")
     return new_dst
@@ -255,12 +274,12 @@ def sort_images_by_model_name(model_dir):
                     for ext in ['.jpeg', '.png']:
                         image_path = os.path.join(model_dir, base_name + ext)                        
                         if os.path.exists(image_path):
-                            shutil.move(image_path, os.path.join(no_meta_dir, os.path.basename(image_path)))                            
+                            safe_move(image_path, os.path.join(no_meta_dir, os.path.basename(image_path)))                            
                             image_moved = True
                             break
                     if not image_moved:
                         logger_cid.info(f"No image found for metadata file {meta_file} (This is expected for images that didn't pass the prompt check)")
-                    shutil.move(os.path.join(model_dir, meta_file), os.path.join(no_meta_dir, meta_file))                    
+                    safe_move(os.path.join(model_dir, meta_file), os.path.join(no_meta_dir, meta_file))                    
                 else:
                     model_name_found = False
                     for line in content.split('\n'):
@@ -301,7 +320,7 @@ def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
             try:
                 if valid_meta:
                     new_image_path = os.path.join(target_dir, os.path.basename(image_path))
-                    shutil.move(image_path, new_image_path)
+                    safe_move(image_path, new_image_path)
                 else:
                     new_image_path = move_to_invalid_meta(image_path, model_dir)
                 image_moved = True
@@ -317,7 +336,7 @@ def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
     meta_path = os.path.join(model_dir, meta_file)
     if valid_meta:
         new_meta_path = os.path.join(target_dir, meta_file)
-        shutil.move(meta_path, new_meta_path)
+        safe_move(meta_path, new_meta_path)
     else:
         new_meta_path = move_to_invalid_meta(meta_path, model_dir)
     
