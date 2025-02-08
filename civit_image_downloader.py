@@ -1,8 +1,9 @@
 import httpx
-import time
 import os
 import asyncio
+import aiofiles 
 import json
+import time
 from tqdm import tqdm
 import shutil
 import re
@@ -73,24 +74,6 @@ def create_option_folder(option_name, base_dir):
 allow_redownload = False
 
 
-def safe_move(src, dst, retries=3, delay=0.5):
-    """
-    Attempt to move a file from src to dst.
-    On PermissionError, wait for 'delay' seconds and try again, up to 'retries' times.
-    """
-    for attempt in range(1, retries + 1):
-        try:
-            shutil.move(src, dst)
-            logger_cid.info(f"Moved file {src} to {dst} on attempt {attempt}")
-            return True
-        except PermissionError as e:
-            logger_cid.warning(f"PermissionError moving {src} to {dst} (attempt {attempt}/{retries}): {e}")
-            time.sleep(delay)
-    logger_cid.error(f"Failed to move {src} to {dst} after {retries} attempts.")
-    return False
-
-
-
 # Function to download an image from the provided URL
 async def download_image(url, output_path, timeout_value, quality='SD'):
     logger_cid.info(f"Attempting to download: {url}")
@@ -128,16 +111,21 @@ async def download_image(url, output_path, timeout_value, quality='SD'):
 
 # Async function to write meta data to a text file. If no meta data is available, the URL to the image is written to the txt file
 async def write_meta_data(meta, output_path, image_id, username):
-    if not meta or all(value == '' for value in meta.values()):
-        output_path = output_path.replace(".txt", "_no_meta.txt")
-        url = f"https://civitai.com/images/{image_id}?period=AllTime&periodMode=published&sort=Newest&view=feed&username={username}&withTags=false"
-        with open(output_path, "w", encoding='utf-8') as file:
-            file.write(f"No metadata available for this image.\nURL: {url}\n")
-    else:
-        with open(output_path, "w", encoding='utf-8') as file:
-            for key, value in meta.items():
-                file.write(f"{key}: {value}\n")
-
+    try:
+        if not meta or all(value == '' for value in meta.values()):
+            output_path = output_path.replace(".txt", "_no_meta.txt")
+            url = f"https://civitai.com/images/{image_id}?username={username}"
+            async with aiofiles.open(output_path, "w", encoding='utf-8') as f:
+                await f.write(f"No metadata available.\nURL: {url}\n")
+        else:
+            async with aiofiles.open(output_path, "w", encoding='utf-8') as f:
+                for key, value in meta.items():
+                    await f.write(f"{key}: {value}\n")
+                await f.flush()  # Ensure data is written to disk
+        return True
+    except Exception as e:
+        logger_cid.error(f"Error writing metadata: {str(e)}")
+        return False
 
 TRACKING_JSON_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "downloaded_images.json")
 
@@ -242,15 +230,58 @@ def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
     return shortened_path
 
 
+def is_file_locked(filepath):
+    """Check if a file is locked by another process (Windows-specific)"""
+    if os.name != 'nt':
+        return False
+        
+    try:
+        fd = os.open(filepath, os.O_RDWR|os.O_EXCL)
+        os.close(fd)
+    except OSError:
+        return True
+    return False
+    
+    
+
+def safe_move(src, dst, max_retries=15, delay=1.0):
+    """Robust file moving with longer delays and more retries"""
+    for attempt in range(1, max_retries+1):
+        try:
+            # Check if source exists before moving
+            if not os.path.exists(src):
+                logger_cid.warning(f"Source file {src} does not exist")
+                return False
+                
+            shutil.move(src, dst)
+            return True
+        except (PermissionError, OSError) as e:
+            if attempt < max_retries:
+                logger_cid.warning(f"Retry {attempt}/{max_retries} for {src}")
+                time.sleep(delay * attempt)  # Exponential backoff
+            else:
+                logger_cid.error(f"Failed to move {src} after {max_retries} attempts")
+                # Attempt copy-then-delete as fallback
+                try:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                    return True
+                except Exception as copy_error:
+                    logger_cid.error(f"Fallback copy failed: {copy_error}")
+                raise
+    return False
+    
+    
 
 def move_to_invalid_meta(src, model_dir):
     invalid_meta_dir = os.path.join(model_dir, 'invalid_meta')
     os.makedirs(invalid_meta_dir, exist_ok=True)
     new_dst = os.path.join(invalid_meta_dir, os.path.basename(src))
     try:
-        safe_move(src, new_dst)
+        if safe_move(src, new_dst):
+            logger_cid.info(f"Moved invalid meta file to {new_dst}")
     except Exception as e:
-        print(f"Error moving the file {src} to the 'invalid_meta' folder. Error: {e}")
+        logger_cid.error(f"Critical error moving {src}: {str(e)}")
     return new_dst
 
         
@@ -259,89 +290,118 @@ def sort_images_by_model_name(model_dir):
     global NEW_IMAGES_DOWNLOADED
     no_meta_dir = os.path.join(model_dir, 'no_meta_data')
     os.makedirs(no_meta_dir, exist_ok=True)
-    
-    if os.path.exists(model_dir) and os.listdir(model_dir):
-        all_files = os.listdir(model_dir)
-        meta_files = [f for f in all_files if f.endswith('_meta.txt') or f.endswith('_meta_no_meta.txt')]
-        
-        for meta_file in meta_files:
-            with open(os.path.join(model_dir, meta_file), 'r', encoding='utf-8') as file:
+
+    if not os.path.exists(model_dir) or not os.listdir(model_dir):
+        logger_cid.info(f"No files to process in directory: {model_dir}")
+        return
+
+    all_files = os.listdir(model_dir)
+    meta_files = [f for f in all_files if f.endswith(('_meta.txt', '_meta_no_meta.txt'))]
+
+    for meta_file in meta_files:
+        meta_path = os.path.join(model_dir, meta_file)
+        base_name = meta_file.replace('_meta_no_meta.txt', '').replace('_meta.txt', '').strip()
+
+        try:
+            # Read metadata file content
+            with open(meta_path, 'r', encoding='utf-8') as file:
                 content = file.read()
-                base_name = meta_file.replace('_meta_no_meta.txt', '').replace('_meta.txt', '').strip()
-                
-                if "No metadata available for this image." in content or meta_file.endswith('_meta_no_meta.txt'):   
-                    image_moved = False
-                    for ext in ['.jpeg', '.png']:
-                        image_path = os.path.join(model_dir, base_name + ext)                        
-                        if os.path.exists(image_path):
-                            safe_move(image_path, os.path.join(no_meta_dir, os.path.basename(image_path)))                            
+
+            # Handle no metadata case
+            if "No metadata available for this image." in content or meta_file.endswith('_meta_no_meta.txt'):
+                image_moved = False
+                for ext in ['.jpeg', '.png']:
+                    image_path = os.path.join(model_dir, base_name + ext)
+                    if os.path.exists(image_path):
+                        try:
+                            safe_move(image_path, os.path.join(no_meta_dir, os.path.basename(image_path)))
                             image_moved = True
                             break
-                    if not image_moved:
-                        logger_cid.info(f"No image found for metadata file {meta_file} (This is expected for images that didn't pass the prompt check)")
-                    safe_move(os.path.join(model_dir, meta_file), os.path.join(no_meta_dir, meta_file))                    
-                else:
-                    model_name_found = False
-                    for line in content.split('\n'):
-                        if "Model:" in line:
-                            model_name = line.split(":")[1].strip()
-                            model_name_found = True                            
-                            break
-                
-                    if model_name_found:
-                        model_name = clean_and_shorten_path(model_name)
-                        target_dir = os.path.join(model_dir, model_name)
-                        os.makedirs(target_dir, exist_ok=True)                        
-                        process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
-                    else:                        
-                        process_image_and_meta(model_dir, meta_file, model_dir, valid_meta=False)
-        
-        # Only check for orphaned images among those that were actually downloaded
-        downloaded_images_in_dir = [f for f in all_files if f.endswith(('.jpeg', '.png')) and os.path.join(model_dir, f) in download_stats["downloaded"]]
-        for file in downloaded_images_in_dir:
-            base_name = file.rsplit('.', 1)[0]
-            if not any(meta for meta in meta_files if meta.startswith(base_name)):
-                logger_cid.warning(f"Orphaned image found: {os.path.join(model_dir, file)}")
-                os.remove(os.path.join(model_dir, file))
-        
-        if meta_files:
-            NEW_IMAGES_DOWNLOADED = True
+                        except Exception as e:
+                            logger_cid.error(f"Failed to move image {image_path}: {e}")
+                            continue
 
+                if not image_moved:
+                    logger_cid.info(f"No image found for metadata file {meta_file} (This is expected for images that didn't pass the prompt check)")
+
+                # Move metadata file to no_meta_dir
+                try:
+                    safe_move(meta_path, os.path.join(no_meta_dir, meta_file))
+                except Exception as e:
+                    logger_cid.error(f"Failed to move metadata file {meta_file}: {e}")
+
+            # Handle valid metadata case
+            else:
+                model_name_found = False
+                model_name = None
+                for line in content.split('\n'):
+                    if "Model:" in line:
+                        model_name = line.split(":")[1].strip()
+                        model_name_found = True
+                        break
+
+                if model_name_found:
+                    model_name = clean_and_shorten_path(model_name)
+                    target_dir = os.path.join(model_dir, model_name)
+                    os.makedirs(target_dir, exist_ok=True)
+                    process_image_and_meta(model_dir, meta_file, target_dir, valid_meta=True)
+                else:
+                    process_image_and_meta(model_dir, meta_file, model_dir, valid_meta=False)
+
+        except Exception as e:
+            logger_cid.error(f"Error processing metadata file {meta_file}: {e}")
+            continue
+
+    # Clean up orphaned images
+    downloaded_images_in_dir = [f for f in all_files if f.endswith(('.jpeg', '.png')) and os.path.join(model_dir, f) in download_stats["downloaded"]]
+    for file in downloaded_images_in_dir:
+        base_name = file.rsplit('.', 1)[0]
+        if not any(meta for meta in meta_files if meta.startswith(base_name)):
+            logger_cid.warning(f"Orphaned image found: {os.path.join(model_dir, file)}")
+            try:
+                os.remove(os.path.join(model_dir, file))
+            except Exception as e:
+                logger_cid.error(f"Failed to remove orphaned image {file}: {e}")
+
+    if meta_files:
+        NEW_IMAGES_DOWNLOADED = True
 
 def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
     base_name = meta_file.replace('_meta.txt', '').replace('_meta_no_meta.txt', '')
-    image_moved = False
-    new_image_path = None
+    meta_path = os.path.join(model_dir, meta_file)
+    
+    # First process metadata file
+    new_meta_path = None
+    try:
+        if valid_meta:
+            new_meta_path = os.path.join(target_dir, meta_file)
+            if safe_move(meta_path, new_meta_path):
+                logger_cid.info(f"Moved metadata {meta_file}")
+        else:
+            new_meta_path = move_to_invalid_meta(meta_path, model_dir)
+    except Exception as e:
+        logger_cid.error(f"Metadata move failed: {e}")
+        return None, None
 
+    # Then process image file
+    new_image_path = None
     extensions = ['.jpeg', '.png']
-    for extension in extensions:
-        image_path = os.path.join(model_dir, base_name + extension)
+    for ext in extensions:
+        image_path = os.path.join(model_dir, base_name + ext)
         if os.path.exists(image_path):
             try:
                 if valid_meta:
                     new_image_path = os.path.join(target_dir, os.path.basename(image_path))
-                    safe_move(image_path, new_image_path)
+                    if safe_move(image_path, new_image_path):
+                        logger_cid.info(f"Moved image {base_name}{ext}")
                 else:
                     new_image_path = move_to_invalid_meta(image_path, model_dir)
-                image_moved = True
-                logger_cid.info(f"Moved image {image_path} to {new_image_path}")
+                break
             except Exception as e:
-                logger_cid.error(f"Error moving image {image_path}: {e}")
-            break
+                logger_cid.error(f"Image move failed: {e}")
+                continue
 
-    if not image_moved:
-        logger_cid.info(f"No image found for metadata file {meta_file} (This is expected for images that didn't pass the prompt check)")
-        return None, None
-
-    meta_path = os.path.join(model_dir, meta_file)
-    if valid_meta:
-        new_meta_path = os.path.join(target_dir, meta_file)
-        safe_move(meta_path, new_meta_path)
-    else:
-        new_meta_path = move_to_invalid_meta(meta_path, model_dir)
-    
     return new_image_path, new_meta_path
-    
 
 visited_pages = set()
 
@@ -394,7 +454,7 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
 
     for model_id in model_ids:
         url = f"{base_url}?modelId={str(model_id)}&nsfw=X"
-        visited_pages = set()  # Reset the visited_pages set for each model
+        visited_pages = set()
 
         while url:
             if url in visited_pages:
@@ -409,71 +469,88 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
                             data = response.json()
                             items = data.get('items', [])
                             total_api_items += len(items)
-                            
-                            # Create directory for model ID
-                            model_name = "unknown_model"
-                            if items and isinstance(items[0], dict):
-                                model_name = items[0]["meta"].get("Model", "unknown_model") if isinstance(items[0].get("meta"), dict) else "unknown_model"
 
+                            # Create directories with exist_ok=True
                             tag_dir = os.path.join(option_folder, sanitized_tag_dir_name)
                             os.makedirs(tag_dir, exist_ok=True)
+                            
+                            model_dir = os.path.join(tag_dir, f"model_{model_id}")
+                            os.makedirs(model_dir, exist_ok=True)
 
                             with tag_model_mapping_lock:
                                 if tag_dir_name not in tag_model_mapping:
                                     tag_model_mapping[tag_dir_name] = []
+                                model_name = items[0]["meta"].get("Model", "unknown_model") if items and isinstance(items[0].get("meta"), dict) else "unknown_model"
                                 tag_model_mapping[tag_dir_name].append((model_id, model_name))
-                            
-                            model_dir = os.path.join(tag_dir, f"model_{(model_id)}")
-                            os.makedirs(model_dir, exist_ok=True)
 
+                            current_batch_tasks = []
                             for item in items:
-                                item_meta = item.get("meta") if item else None
-                                prompt = item_meta.get("prompt", "").replace(" ", "_") if isinstance(item_meta, dict) else ""
-                                if disable_prompt_check or (tag_to_check and all(word in prompt.lower() for word in tag_to_check.lower().split("_"))):
+                                item_meta = item.get("meta") or {}
+                                prompt = item_meta.get("prompt", "").lower()
+                                tag_check_passed = (
+                                    disable_prompt_check or 
+                                    not tag_to_check or 
+                                    all(word in prompt for word in tag_to_check.lower().split("_"))
+                                )
+
+                                if tag_check_passed:
                                     image_id = item['id']
                                     image_url = item['url']
-                                    image_extension = ".png" if quality == 'HD' else ".jpeg"
-                                    image_path = os.path.join(model_dir, f"{image_id}{image_extension}")
+                                    ext = ".png" if quality == 'HD' else ".jpeg"
+                                    image_path = os.path.join(model_dir, f"{image_id}{ext}")
 
                                     if allow_redownload == 2 and check_if_image_downloaded(str(image_id), image_path, quality):
                                         continue
 
-                                    task = download_image(image_url, image_path, timeout_value, quality)
-                                    tasks.append(task)
-                                else:
-                                    logger_cid.info(f"Skipping image {item['id']} as it doesn't pass the prompt check")
+                                    current_batch_tasks.append(
+                                        download_image(image_url, image_path, timeout_value, quality)
+                                    )
 
-                            # This will run all download tasks asynchronously
-                            download_results = await asyncio.gather(*tasks)
-                            tasks = []  # Reset the tasks list after gathering the results
+                            # Process batch downloads with progress tracking
+                            batch_results = []
+                            if current_batch_tasks:
+                                batch_results = await asyncio.gather(*current_batch_tasks)
+                                await asyncio.sleep(1)  # Add brief pause between batches
 
-                            # Check the results and mark the downloaded images
-                            for idx, (download_success, reason) in enumerate(download_results):
-                                image_id = items[idx]['id']
-                                if download_success:
+                            # Process results with error handling
+                            for idx, (success, reason) in enumerate(batch_results):
+                                item = items[idx]
+                                image_id = item['id']
+                                image_path = os.path.join(model_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
+
+                                if success:
                                     NEW_IMAGES_DOWNLOADED = True
                                     total_downloaded_items += 1
-                                    image_path = os.path.join(model_dir, f"{image_id}{'.png' if quality == 'HD' else '.jpeg'}")
                                     tags = [tag_to_check] if tag_to_check else []
-                                    mark_image_as_downloaded(str(image_id), image_path, quality, tags=tags, url=items[idx]['url'])
+                                    mark_image_as_downloaded(str(image_id), image_path, quality, tags=tags, url=item['url'])
                                     download_stats["downloaded"].append(image_path)
+                                    
+                                    # Write metadata with async file handling
+                                    meta_path = os.path.join(model_dir, f"{image_id}_meta.txt")
+                                    await write_meta_data(item.get("meta"), meta_path, image_id, item.get('username', 'unknown'))
+                                    
+                                    if not item.get("meta"):
+                                        images_without_meta += 1
                                 else:
                                     logger_cid.error(f"Failed to download image {image_id}: {reason}")
-                                    download_stats["skipped"].append((items[idx]['url'], reason))
+                                    download_stats["skipped"].append((item['url'], reason))
 
-                                meta_output_path = os.path.join(model_dir, f"{image_id}_meta.txt")
-                                await write_meta_data(items[idx].get("meta"), meta_output_path, image_id, items[idx].get('username', 'unknown'))
-                                if not items[idx].get("meta"):
-                                    images_without_meta += 1
+                            # Add cleanup before sorting
+                            if sys.platform == 'win32':
+                                await asyncio.sleep(2)  # Extra time for Windows file handles
+                            
+                            try:
+                                sort_images_by_model_name(model_dir)
+                            except Exception as sort_error:
+                                logger_cid.error(f"Error sorting files in {model_dir}: {str(sort_error)}")
 
-                            sort_images_by_model_name(model_dir)
-                            metadata = data['metadata']
-                            next_page = metadata.get('nextPage')
-                            if next_page:
-                                url = next_page
-                                await asyncio.sleep(3)  # Add a delay between requests
+                            # Pagination handling
+                            if data.get('metadata', {}).get('nextPage'):
+                                url = data['metadata']['nextPage']
+                                await asyncio.sleep(3)
                             else:
-                                break
+                                url = None
+
                     except Exception as e:
                         logger_cid.error(f"Error processing URL {url}: {str(e)}")
                         failed_urls.append(url)
