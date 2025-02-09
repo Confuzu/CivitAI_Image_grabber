@@ -1,7 +1,5 @@
-#!/usr/bin/env python
 import httpx
 import os
-import sys
 import asyncio
 import aiofiles 
 import json
@@ -15,34 +13,9 @@ import csv
 from threading import Lock
 import argparse
 
-##########################################
-# Helper: Detect file type from its signature
-##########################################
-def detect_extension(data: bytes) -> str:
-    """
-    Detects the file extension from the first bytes of the data.
-    Supports: PNG, JPEG, WebP, MP4 and WebM.
-    """
-    # Check for PNG: 89 50 4E 47 0D 0A 1A 0A
-    if data.startswith(b'\x89PNG\r\n\x1a\n'):
-        return ".png"
-    # Check for JPEG: FF D8 FF
-    if data.startswith(b'\xff\xd8\xff'):
-        return ".jpeg"
-    # Check for WebP: starts with 'RIFF' and then has 'WEBP' at bytes 8-12
-    if data.startswith(b'RIFF') and data[8:12] == b'WEBP':
-        return ".webp"
-    # Check for MP4: many MP4 files contain 'ftyp' at byte offset 4
-    if len(data) >= 12 and data[4:8] == b'ftyp':
-        return ".mp4"
-    # Check for WEBM: EBML header (commonly used by WebM)
-    if data.startswith(b'\x1A\x45\xDF\xA3'):
-        return ".webm"
-    return None
 
-##########################################
+
 # Setup logging
-##########################################
 script_dir = os.path.dirname(os.path.abspath(__file__))
 log_file_path = os.path.join(script_dir, "civit_image_downloader_log_1.3.txt")
 logger_cid = logging.getLogger('cid')
@@ -53,10 +26,12 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 file_handler_cid.setFormatter(formatter)
 logger_cid.addHandler(file_handler_cid)
 
+
 ##########################################
-# CivitAi API is fixed!
+# CivitAi API is fixed!#
 # civit_image_downloader_1.3
 ##########################################
+
 
 # API endpoint for retrieving image URLs
 base_url = "https://civitai.com/api/v1/images"
@@ -71,6 +46,7 @@ semaphore = asyncio.Semaphore(5)
 # Directory for image downloads
 output_dir = "image_downloads"
 os.makedirs(output_dir, exist_ok=True)
+
 
 def is_command_line_mode():
     return any(vars(args).values())
@@ -89,6 +65,7 @@ def parse_arguments():
     return parser.parse_args()
 args = parse_arguments()
 
+
 def create_option_folder(option_name, base_dir):
     option_dir = os.path.join(base_dir, option_name)
     os.makedirs(option_dir, exist_ok=True)
@@ -96,58 +73,27 @@ def create_option_folder(option_name, base_dir):
 
 allow_redownload = False
 
-##########################################
-# Updated download function with auto-detect extension
-##########################################
+
+# Function to download an image from the provided URL
 async def download_image(url, output_path, timeout_value, quality='SD'):
     logger_cid.info(f"Attempting to download: {url}")
+    file_extension = ".png" if quality == 'HD' else ".jpeg"
+    output_path_with_extension = re.sub(r'\.jpeg|\.png', file_extension, output_path, flags=re.IGNORECASE)
+    if quality == 'HD':
+        url = re.sub(r"width=\d{3,4}", "original=true", url)
+    
     async with semaphore:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, timeout=timeout_value, headers=headers)
                 response.raise_for_status()
                 total_size = int(response.headers.get('content-length', 0))
-                
-                # Try to get extension from the Content-Type header
-                content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
-                mapping = {
-                    "image/png": ".png",
-                    "image/jpeg": ".jpeg",
-                    "image/jpg": ".jpg",
-                    "image/webp": ".webp",
-                    "video/mp4": ".mp4",
-                    "video/webm": ".webm"
-                }
-                file_extension = mapping.get(content_type, None)
-                
-                # Use the async iterator to get the first chunk from the stream
-                byte_iter = response.aiter_bytes()
-                try:
-                    first_chunk = await anext(byte_iter)
-                except StopAsyncIteration:
-                    first_chunk = b""
-                
-                # If Content-Type did not yield a valid extension, try to detect from the first chunk
-                if file_extension is None:
-                    file_extension = detect_extension(first_chunk)
-                    if file_extension is None:
-                        # Fallback: default to png for HD and jpeg for SD
-                        file_extension = ".png" if quality == 'HD' else ".jpeg"
-                
-                # If output_path already has an extension, replace it; otherwise, append the detected extension.
-                if re.search(r'\.\w+$', output_path):
-                    output_path_with_extension = re.sub(r'\.\w+$', file_extension, output_path)
-                else:
-                    output_path_with_extension = output_path + file_extension
-                
                 progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, desc=f"Downloading {output_path_with_extension}")
-                
+
                 with open(output_path_with_extension, "wb") as file:
-                    file.write(first_chunk)
-                    progress_bar.update(len(first_chunk))
-                    async for chunk in byte_iter:
-                        file.write(chunk)
+                    for chunk in response.iter_bytes():
                         progress_bar.update(len(chunk))
+                        file.write(chunk)
                 progress_bar.close()
                 logger_cid.info(f"Successfully downloaded: {output_path_with_extension}")
                 return True, None
@@ -162,9 +108,8 @@ async def download_image(url, output_path, timeout_value, quality='SD'):
             logger_cid.error(f"Error downloading {url}: {reason}")
             return False, reason
 
-##########################################
-# Async function to write meta data to a text file.
-##########################################
+
+# Async function to write meta data to a text file. If no meta data is available, the URL to the image is written to the txt file
 async def write_meta_data(meta, output_path, image_id, username):
     try:
         if not meta or all(value == '' for value in meta.values()):
@@ -187,12 +132,14 @@ TRACKING_JSON_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "
 downloaded_images_lock = Lock()
 tag_model_mapping_lock = Lock()
 
+
 def load_downloaded_images():
     try:
         with open(TRACKING_JSON_FILE, "r") as file:
             return json.load(file)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
 
 def check_if_image_downloaded(image_id, image_path, quality='SD'):
     with downloaded_images_lock:
@@ -202,6 +149,7 @@ def check_if_image_downloaded(image_id, image_path, quality='SD'):
             if existing_path == image_path:
                 return True
         return False
+
 
 def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=None):
     with downloaded_images_lock:
@@ -223,6 +171,7 @@ def mark_image_as_downloaded(image_id, image_path, quality='SD', tags=None, url=
         
         logger_cid.info(f"Marked as downloaded: {image_id} at {image_path}")    
 
+
 SOURCE_MISSING_MESSAGE_SHOWN = False
 NEW_IMAGES_DOWNLOADED = False
 
@@ -232,7 +181,7 @@ def manual_copy(src, dst):
     # Check whether the source file exists
     if os.path.exists(src):
         try:
-            shutil.copy2(src, dst)  # Copies the file and retains the metadata
+            shutil.copy2(src, dst) # Copies the file and retains the metadata
             NEW_IMAGES_DOWNLOADED = True
             return True, dst  # Returns True if the copy was successful
         except Exception as e:
@@ -242,7 +191,7 @@ def manual_copy(src, dst):
         if not SOURCE_MISSING_MESSAGE_SHOWN:
             print(f"Source file {src} does not exist. Copy skipped.")
             SOURCE_MISSING_MESSAGE_SHOWN = True
-        return False  # Also returns False if the source file does not exist
+        return False # Also returns False if the source file does not exist
 
 def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
     # Replace %20 with a space
@@ -280,6 +229,7 @@ def clean_and_shorten_path(path, max_total_length=260, max_component_length=80):
 
     return shortened_path
 
+
 def is_file_locked(filepath):
     """Check if a file is locked by another process (Windows-specific)"""
     if os.name != 'nt':
@@ -292,6 +242,8 @@ def is_file_locked(filepath):
         return True
     return False
     
+    
+
 def safe_move(src, dst, max_retries=15, delay=1.0):
     """Robust file moving with longer delays and more retries"""
     for attempt in range(1, max_retries+1):
@@ -319,6 +271,8 @@ def safe_move(src, dst, max_retries=15, delay=1.0):
                 raise
     return False
     
+    
+
 def move_to_invalid_meta(src, model_dir):
     invalid_meta_dir = os.path.join(model_dir, 'invalid_meta')
     os.makedirs(invalid_meta_dir, exist_ok=True)
@@ -329,6 +283,8 @@ def move_to_invalid_meta(src, model_dir):
     except Exception as e:
         logger_cid.error(f"Critical error moving {src}: {str(e)}")
     return new_dst
+
+        
 
 def sort_images_by_model_name(model_dir):
     global NEW_IMAGES_DOWNLOADED
@@ -449,6 +405,7 @@ def process_image_and_meta(model_dir, meta_file, target_dir, valid_meta):
 
 visited_pages = set()
 
+
 async def search_models_by_tag(tag, failed_search_requests=[]):
     base_url = f"https://civitai.com/api/v1/models?tag={tag}&nsfw=true"
     model_id = set()
@@ -480,6 +437,7 @@ async def search_models_by_tag(tag, failed_search_requests=[]):
                     failed_search_requests.append(base_url)
                     break
         return model_id
+
 
 tag_model_mapping = {}
 
@@ -600,6 +558,7 @@ async def download_images_for_model_with_tag_check(model_ids, option_folder, tim
 
     return tasks, failed_urls, images_without_meta, sanitized_tag_dir_name, total_api_items, total_downloaded_items
 
+
 def sort_images_by_tag(option_folder, tag_model_mapping):
     with tag_model_mapping_lock:
         for tag, model_ids in tag_model_mapping.items():
@@ -607,6 +566,7 @@ def sort_images_by_tag(option_folder, tag_model_mapping):
             tag_dir = os.path.join(option_folder, sanitized_tag)
             if not os.listdir(tag_dir):
                 print(f"No images found for the tag: {tag}")
+
 
 def write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mapping):
     with tag_model_mapping_lock:
@@ -624,6 +584,7 @@ def write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mappin
                 writer = csv.writer(file)
                 writer.writerow(["Current Tag", "Previously Downloaded Tag", "Image Path", "Download URL"])
                 for image_id, image_info in downloaded_images.items():
+
                     # Here it is assumed that the "tags" are stored in the "downloaded_images" dictionary
                     if tag in image_info.get("tags", []):
                         for prev_tag in image_info.get("tags", []):
@@ -650,6 +611,7 @@ async def is_valid_username(username):
         except Exception as e:
             return False, f"Unexpected error: {str(e)}"
 
+
 async def is_valid_model_id(identifier):
     url = f"{base_url}?modelId={str(identifier)}&nsfw=X"
     async with httpx.AsyncClient() as client:
@@ -673,6 +635,7 @@ async def is_valid_model_id(identifier):
         except Exception as e:
             return False, f"Unexpected error: {str(e)}"
 
+
 async def is_valid_model_version_id(model_version_id):
     url = f"{base_url}?modelVersionId={str(model_version_id)}&nsfw=X"
     async with httpx.AsyncClient() as client:
@@ -692,6 +655,7 @@ async def is_valid_model_version_id(model_version_id):
         except Exception as e:
             return False, f"Unexpected error: {str(e)}"
 
+
 def get_url_for_identifier(identifier, identifier_type):
     base_url = "https://civitai.com/api/v1/images"
     if identifier_type == 'model':
@@ -702,6 +666,7 @@ def get_url_for_identifier(identifier, identifier_type):
         return f"{base_url}?username={identifier.strip()}&nsfw=X&sort=Newest"
     else:
         raise ValueError("Invalid identifier_type. Should be 'model', 'modelVersion', or 'username'.")
+
 
 async def download_images(identifier, option_folder, identifier_type, timeout_value, quality='SD', allow_redownload=2):
     global NEW_IMAGES_DOWNLOADED, download_stats
@@ -799,6 +764,7 @@ async def download_images(identifier, option_folder, identifier_type, timeout_va
     logger_cid.info(f"Total items from API: {total_items}, Total downloaded: {total_downloaded}")
     return failed_urls, images_without_meta, total_items, total_downloaded
 
+
 def print_download_statistics():
     print("\n")
     print(f"Number of downloaded images: {len(download_stats['downloaded'])}")
@@ -824,6 +790,7 @@ async def main():
         "downloaded": [],
         "skipped": [],
     }
+
 
     # Check if we're in mixed mode
     provided_args = [arg for arg in vars(args) if getattr(args, arg) is not None]
@@ -897,6 +864,7 @@ async def main():
         images_without_meta += result[1]
         total_api_items += result[2]
         total_downloaded_items += result[3]
+
 
     for tag, model_ids in tag_model_mapping.items():
         write_summary_to_csv(tag, downloaded_images, option_folder, tag_model_mapping)
