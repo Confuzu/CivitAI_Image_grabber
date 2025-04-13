@@ -8,145 +8,232 @@ The images are Downloaded into a folder with the name of the user, ModelID or th
 Second Level is the Model Name with which the image was generated.
 
 
-# CivitAI API is fixed
 
-# Usage 
+# Installation
+
+
+1.  **Install Python 3** Ensure you have Python 3.8 or newer installed.
+
 ```
 install Python3
 ```
-```
+   
+2.  **Install Dependencies** NEW requirements for users who already use the script
+```bash
 pip install -r requirements.txt
 ```
+
+3.  **Migrate Existing Data**
+*   If you are using the previous version with a `downloaded_images.json` file and want to continue using your data for tracking, you must use the my tool `migrate_json_to_sqlite.py` to transfer your old data to the new database.
+*   Make sure both `migrate_json_to_sqlite.py` and your old `downloaded_images.json` are in the same directory.
+*   Run the migration tool from your terminal:
+```bash
+python migrate_json_to_sqlite.py
 ```
+*   Follow the prompts. It will create `tracking_database.sqlite` and offer to rename your old JSON file.
+
+---
+
+# Usage
+
+## Interactive Mode
+
+Run the script without any command-line arguments:
+```bash
 python civit_image_downloader.py
 ```
-## Interactive Mode
 the script will ask you to:
 
-          Enter timeout value (in seconds) [default: 60]: 
-          Choose image quality (1 for SD, 2 for HD) [default: 1]: 
-          Allow re-downloading of images already tracked (1 for Yes, 2 for No) [default: 2]: 
-          Choose mode (1 for username, 2 for model ID, 3 for Model tag search, 4 for model version ID):
-          Mode 3 
-          Enter tags (comma-separated): TAG
-          Disable prompt check? (y/n):
+1.  `Enter timeout value (seconds) [default: 60]:`
+2.  `Choose image quality (1=SD, 2=HD) [default: 1]:`
+3.  `Allow re-downloading tracked items? (1=Yes, 2=No) [default: 2]:` 
+4.  `Choose mode (1=user, 2=model ID, 3=tag search, 4=model version ID):` 
+5.  `Enter max concurrent downloads [default: 5]:` 
+6.  *(Mode-specific prompts):*
+    *   Mode 1: `Enter username(s) (, separated):`
+    *   Mode 2: `Enter model ID(s) (numeric, , separated):`
+    *   Mode 3: `Enter tags (, separated):`
+    *   Mode 3: `Disable prompt check? (y/n) [default: n]:` (Check if tag words must be in the image prompt)
+    *   Mode 4: `Enter model version ID(s) (numeric, , separated):`
 
-                        
 If you just hit enter it will use the Default values of that Option if it has a default value.  <br /> 
  <br /> 
+
 ## Command-Line Mode
-arguments filled with the default values as an example<br /> 
-Username Mode
-```
---timeout=60  --quality=1 --redownload=2  --mode=1   --username=
-```
-Model ID Mode
-```
---timeout=60  --quality=1 --redownload=2  --mode=2   --model_id=
-```
-Tag search Mode 
-```
---timeout=60  --quality=1 --redownload=2  --mode=3   --tags=  --disable_prompt_check=
-```
-Model version ID Mode
-```
---timeout=60  --quality=1 --redownload=2  --mode=4   --model_version_id=
-```
- <br /> 
- <br /> 
- 
-## Mixed Mode 
-If only some arguments are provided, the script will use the provided options and prompt the user for any missing inputs. <br /> 
- <br /> 
 
+Provide arguments directly on the command line. Unspecified arguments will use their defaults. `--mode` is required.
 
+**Available Arguments**
 
-## Folder Structure  <br /> 
-The downloaded files will be organized in the following structure:
+*   `--timeout INT` (Default: 60)
+*   `--quality {1,2}` (1=SD, 2=HD, Default: SD)
+*   `--redownload {1,2}` (1=Yes, 2=No, Default: 2)
+*   `--mode {1,2,3,4}` (**Required**)
+*   `--tags TAGS` (Comma-separated, required for Mode 3)
+*   `--disable_prompt_check {y,n}` (Default: n)
+*   `--username USERNAMES` (Comma-separated, required for Mode 1)
+*   `--model_id IDS` (Comma-separated, numeric, required for Mode 2)
+*   `--model_version_id IDS` (Comma-separated, numeric, required for Mode 4)
+*   `--output_dir PATH` (Default: "image_downloads")
+*   `--semaphore_limit INT` (Default: 5)
+*   `--no_sort` (Disables model subfolder sorting, Default: False/Sorting enabled)
+*   `--max_path INT` (Default: 240)
+*   `--retries INT` (Default: 2)
+
+## Examples
+
+*   Download HD images for user "artist1", allowing redownloads, higher concurrency:
+    ```bash
+    python civit_image_downloader.py --mode 1 --username "artist1" --quality 2 --redownload 1 --semaphore_limit 10
+    ```
+*   Download SD images for models 123 and 456, using defaults for other options:
+    ```bash
+    python civit_image_downloader.py --mode 2 --model_id "123, 456"
+    ```
+*   Download SD images for tag "sci-fi", disabling prompt check, no redownloads:
+    ```bash
+    python civit_image_downloader.py --mode 3 --tags "sci-fi" --disable_prompt_check y --redownload 2
+    ```
+
+## Mixed Mode
+
+If only some arguments are provided (e.g., only `--mode`), the script will use the provided options and prompt the user for any missing inputs.
+
+---
+
+## Folder Structure
+
+The downloaded files will be organized within the specified `--output_dir` (default: `image_downloads`). Sorting (`--no_sort` flag) affects the structure inside the identifier folder.
+
+**With Sorting Enabled (Default)**
+
 ```
 image_downloads/
-└── Username_Search/
-|   ├── Username/
-│       ├── Model1/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── Model2/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── invalid_meta/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── no_meta_data/
-│           ├── image1.jpeg
-│           ├── image1.png
-│           └── details.txt
-
+├── Username_Search/
+│   └── [Username]/
+│       ├── [Model Name Subfolder]/  # Based on image metadata 'Model' field
+│       │   ├── [ImageID].jpeg       # or .png, .webp, .mp4, .webm
+│       │   └── [ImageID]_meta.txt
+│       ├── invalid_metadata/        # For images with meta but no parsable 'Model' field
+│       │   ├── [ImageID].jpeg 
+│       │   └── [ImageID]_meta.txt
+│       └── no_metadata/             # For images with no metadata found
+│           ├── [ImageID].jpeg 
+│           └── [ImageID]_no_meta.txt
 ├── Model_ID_Search/
-│   └── Model_ID/
-│       ├── Model1/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── Model2/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── invalid_meta/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── no_meta_data/
-│           ├── image1.jpeg
-│           ├── image1.png
-│           └── details.txt
-
+│   └── model_[ModelID]/
+│       ├── [Model Name Subfolder]/
+│       │   └── [ImageID].jpeg
+│       │   └── [ImageID]_meta.txt
+│       ├── invalid_metadata/
+│       │   └── [ImageID].jpeg
+│       │   └── [ImageID]_meta.txt
+│       └── no_metadata/
+│           └── [ImageID].jpeg
+│           └── [ImageID]_no_meta.txt
+│ 
 ├── Model_Version_ID_Search/
-│   └── Version_ID/
-│       ├── Model1/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── Model2/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── invalid_meta/
-│       |   ├── image1.jpeg
-│       |   ├── image1.png
-│       |   └── details.txt
-│       ├── no_meta_data/
-│           ├── image1.jpeg
-│           ├── image1.png
-│           └── details.txt
-
-├── Model_Tag_Search/
-│   └── Searched_tag/
-│       ├── model_ID/
-│           ├──Model1/
-│           |   ├── image1.jpeg
-│           |   ├── image1.png
-│           |   └── details.txt
-│           └── Searched_tag_summary_YYYYMMDD.csv
-│           ├──Model2/
-│           |   ├── image1.jpeg
-│           |   ├── image1.png
-│           |   └── details.txt
-│           └── Searched_tag_summary_YYYYMMDD.csv
-│           ├──invalid_meta/
-│           |   ├── image1.jpeg
-│           |   ├── image1.png
-│           |   └── details.txt
-│           └── Searched_tag_summary_YYYYMMDD.csv
-│           ├──no_meta_data/
-│           |   ├── image1.jpeg
-│           |   ├── image1.png
-│           |   └── details.txt
-│           └── Searched_tag_summary_YYYYMMDD.csv
+│   └── modelVersion_[VersionID]/
+│       ├── [Model Name Subfolder]/
+│       │   └── [ImageID].jpeg
+│       │   └── [ImageID]_meta.txt
+│       ├── invalid_metadata/
+│       │   └── [ImageID].jpeg
+│       │   └── [ImageID]_meta.txt
+│       └── no_metadata/
+│           └── [ImageID].jpeg
+│           └── [ImageID]_no_meta.txt
+└── Model_Tag_Search/
+    └── [Sanitized_Tag_Name]/         # e.g., sci_fi_vehicle
+        ├── model_[ModelID]/          # Folder for each model found under the tag
+        │   ├── [Model Name Subfolder]/ # Sorting within model folder
+        │   └── [ImageID].jpeg
+        │   └── [ImageID]_meta.txt
+        │   ├── invalid_metadata/
+        │   └── [ImageID].jpeg
+        │   └── [ImageID]_meta.txt
+        │   └── no_metadata/
+        │   └── [ImageID].jpeg
+        │   └── [ImageID]_no_meta.txt
+        └── summary_[Sanitized_Tag_Name]_[YYYYMMDD].csv 
 ```
+
+**With Sorting Disabled (`--no_sort`)**
+
+All images and metadata files for a given identifier (username, model ID, model version ID, or model ID within a tag) are placed directly within that identifier's folder, without the `[Model Name Subfolder]`, `invalid_metadata`, or `no_metadata` subdirectories.
+
+```
+image_downloads/
+├── Username_Search/
+│   └── [Username]/
+│       ├── [ImageID].jpeg
+│       ├── [ImageID]_meta.txt
+│       └── [ImageID]_no_meta.txt
+├── Model_ID_Search/
+│   └── model_[ModelID]/
+│       ├── [ImageID].jpeg
+│       └── ...
+├── Model_Version_ID_Search/
+│   └── modelVersion_[VersionID]/
+│       ├── [ImageID].jpeg
+│       └── ...
+└── Model_Tag_Search/
+    └── [Sanitized_Tag_Name]/
+        ├── model_[ModelID]/
+        │   ├── [ImageID].jpeg
+        │   ├── [ImageID]_meta.txt
+        │   └── [ImageID]_no_meta.txt
+        └── summary_[Sanitized_Tag_Name]_[YYYYMMDD].csv # CSV still in tag folder
+```
+
+---
+
+## Tracking Database (`tracking_database.sqlite`)
+
+This file replaces the old JSON file. It stores a record of each downloaded image/video, including its path, quality, download date, associated tags (from Mode 3), original URL, and extracted checkpoint name (from metadata). You can explore this file using tools like "DB Browser for SQLite".
+
+**Migration Tool (`migrate_json_to_sqlite.py`)**
+
+If you are updating from a version using `downloaded_images.json`, run this separate Python script *once* in the same directory as your JSON file *before* using the main downloader. It will read the JSON and populate the new `tracking_database.sqlite` file.
+
+```bash
+python migrate_json_to_sqlite.py
+```
+
+---
+
+
+
 # Update History
+
+## 1.3 New Feature & Update <br />
+
+1.  **Code Structure (Major Refactoring):**  <br />
+                                           The entire script has been refactored into an object-oriented structure using the `CivitaiDownloader` class. This encapsulates state (configuration,tracking data, 
+                                           statistics) and logic (downloading, sorting, API interaction) within the class, eliminating reliance on global variables. <br />
+
+2.  **Scalable Tracking (SQLite Migration):** <br />
+      **Replaced JSON:** The previous `downloaded_images.json` tracking file has been replaced with an **SQLite database** (`tracking_database.sqlite`). <br />
+       **Relational Tags:** Image tags (for Mode 3 summaries) are now stored relationally in a separate `image_tags` table, linked to the main `tracked_images` table. This allows for efficient querying. <br />
+       **Migration:** A separate `migrate_json_to_sqlite.py` script is provided for users to perform a one-time migration of their existing `downloaded_images.json` data into the new SQLite database format. <br />
+
+3.  **Robust Error Handling & Retries:** <br />
+       **Automatic Retries:** Integrated the `tenacity` library to automatically retry failed network operations (image downloads, API page fetches, model searches) caused by common transient issues like timeouts, 
+                              connection errors, or specific server-side errors (500, 502, 503, 504). <br />
+       **File Operations:** Implemented a `_safe_move` function with retries to handle potential file locking issues during sorting (especially on Windows). Added checks to verify move operations. <br />
+
+4.  **Improved Tag Search (Mode 3) Validation:** <br />
+       **Invalid Tag Detection:** When searching by tag, the script now fetches the first page of results and checks if any of the returned models *actually contain* the searched tag in their own metadata tags. <br />
+
+5.  **Detailed Per-Identifier Statistics:** <br />
+       **Granular Reporting:** The final statistics summary now provides a detailed breakdown for *each* identifier (username, model ID, tag, version ID) processed during the run. <br />
+
+6.  **Improved User Interface & Experience:** <br />
+       **Input Validation:** Added/improved validation loops for interactive inputs (e.g., ensuring numeric IDs, positive numbers). Handles invalid CLI arguments more gracefully (logs errors, exits). <br />
+       **Clearer Output:** Refined console and log messages. Added specific warnings for invalid tags or identifiers that yield no results. Reduced console noise by logging successful per-file downloads only at the 
+                            DEBUG level. Added a final summary note listing identifiers that resulted in no downloads. <br />
+
+
 
 ## 1.2 New Feature & Update
 
