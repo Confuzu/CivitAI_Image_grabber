@@ -17,6 +17,11 @@ from asyncio import Lock, Semaphore
 import argparse
 from typing import Optional, Tuple, List, Dict, Any, AsyncGenerator
 
+# Color Code
+RED = "\033[91m"
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
 # --- Tenacity for Retries ---
 try:
     from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log, RetryError
@@ -1448,7 +1453,7 @@ class CivitaiDownloader:
              except ValueError: identifier, id_type = key, "Unknown"
 
              print(f"Identifier: {identifier} (Type: {id_type})")
-             print(f"  Status: {data.get('status', 'Unknown')}")
+             print(f"  Status: {GREEN if data.get('status', 'Unknown') == 'Completed' else RED if data.get('status', 'Unknown') == 'Failed' else RESET}{data.get('status', 'Unknown')}{RESET}")
              if data.get('reason'): print(f"  Reason: {data['reason']}")
              # Print the final aggregated counts for this identifier
              print(f"  API Items: {counts['api']}")
