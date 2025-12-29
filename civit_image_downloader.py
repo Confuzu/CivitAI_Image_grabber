@@ -129,6 +129,33 @@ def detect_extension(data: bytes) -> Optional[str]:
     if data.startswith(b'\x1A\x45\xDF\xA3'): return ".webm"
     return None
 
+def extract_image_meta(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Extracts the actual metadata dict from an API item, handling nested structure.
+    
+    CivitAI API changed structure from:
+        item["meta"] = {"prompt": "...", "Model": "..."}
+    To:
+        item["meta"] = {"id": 123, "meta": {"prompt": "...", "Model": "..."}}
+    
+    This function handles both old and new structures.
+    """
+    meta_field = item.get("meta")
+    if not meta_field or not isinstance(meta_field, dict):
+        return {}
+    
+    # Check for new nested structure: meta.meta exists and contains generation params
+    nested_meta = meta_field.get("meta")
+    if nested_meta and isinstance(nested_meta, dict):
+        # New structure: actual metadata is in meta.meta
+        return nested_meta
+    
+    # Old structure or meta doesn't have nested meta: check if prompt/Model exists at top level
+    if "prompt" in meta_field or "Model" in meta_field or "seed" in meta_field:
+        return meta_field
+    
+    # Fallback: return empty dict if no recognizable structure
+    return {}
+
 # ============================
 # --- The Downloader Class ---
 # ============================
@@ -631,6 +658,17 @@ class CivitaiDownloader:
         """Processes image items: checks skip conditions, creates download tasks."""
         tasks = []; mode_specific_info = mode_specific_info or {}
         tag_to_check = mode_specific_info.get('tag_to_check'); disable_prompt_check = mode_specific_info.get('disable_prompt_check', False); current_tag = mode_specific_info.get('current_tag')
+        # DEBUG: Log first item structure to understand API response
+        if items and len(items) > 0:
+            first_item = items[0]
+            self.logger.debug(f"DEBUG - First item keys: {list(first_item.keys())}")
+            raw_meta = first_item.get("meta")
+            self.logger.debug(f"DEBUG - Raw meta field type: {type(raw_meta)}")
+            extracted_meta = extract_image_meta(first_item)
+            self.logger.debug(f"DEBUG - Extracted meta keys: {list(extracted_meta.keys()) if extracted_meta else 'None'}")
+            if extracted_meta:
+                prompt_preview = extracted_meta.get("prompt", "")[:100]
+                self.logger.debug(f"DEBUG - Prompt preview: {prompt_preview}...")
         for item in items:
             image_id = item.get('id'); 
             if not image_id: continue
@@ -643,7 +681,8 @@ class CivitaiDownloader:
                     pass # Simpler: Don't update tags on skipped items via this path.
             # Tag Prompt Check
             if not should_skip and tag_to_check and not disable_prompt_check:
-                 prompt = (item.get("meta") or {}).get("prompt", "").lower()
+                 meta = extract_image_meta(item)
+                 prompt = meta.get("prompt", "").lower()
                  if not all(word in prompt for word in tag_to_check.lower().split("_") if word):
                      skip_reason = f"Prompt check failed: {tag_to_check}"; should_skip = True
             # Update stats if skipped
@@ -663,7 +702,7 @@ class CivitaiDownloader:
         result_entry = self._get_result_entry(parent_result_key, model_id)
         success, final_image_path, reason = await self.download_image(item, target_dir)
         if success and final_image_path:
-             meta = item.get("meta", {}); username = item.get("username")
+             meta = extract_image_meta(item); username = item.get("username")
              checkpoint_name = str(meta.get("Model", "")).strip() if meta and meta.get("Model") else None
              if result_entry: result_entry['success_count'] += 1
              tags_to_mark = [current_tag] if current_tag else []
