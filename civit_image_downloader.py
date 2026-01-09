@@ -472,7 +472,15 @@ class CivitaiDownloader:
             async with self.semaphore:
                 client = await self._get_client()
                 async with client.stream("GET", target_url) as response:
-                    if 400 <= response.status_code < 500: return False, None, f"HTTP Client Error {response.status_code} {response.reason_phrase}" # Not retryable
+
+                    if response.status_code == 429:
+                        print(f"Rate limited. Waiting to retry...")
+                        # This is the "magic" line. It throws an HTTPError.
+                        # The @retry decorator catches this error and starts the timer.
+                        response.raise_for_status() 
+                    
+                    elif 400 <= response.status_code < 500: 
+                        return False, None, f"HTTP Client Error {response.status_code} {response.reason_phrase}" # Not retryable
                     response.raise_for_status() # Raises for >=400. Retry logic catches 5xx.
 
                     # Extension Detection
