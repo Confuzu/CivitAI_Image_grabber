@@ -24,7 +24,10 @@ RESET = "\033[0m"
 
 # --- Tenacity for Retries ---
 try:
-    from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log, RetryError
+    #from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log, RetryError
+
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+
 except ImportError:
     print("Error: 'tenacity' library not found. Please install it using: pip install tenacity")
     sys.exit(1)
@@ -437,11 +440,17 @@ class CivitaiDownloader:
         # ===================================
         # --- Core Download/File Methods ---
         # ===================================
-    @retry( # Static decorator using startup retry count
-        stop=stop_after_attempt(1 + parse_arguments().retries),
-        wait=wait_random_exponential(multiplier=1, max=10),
-        retry=retry_if_exception(should_retry_exception),
-        before_sleep=before_sleep_log(retry_logger, logging.WARNING)
+    #@retry( # Static decorator using startup retry count
+    #    stop=stop_after_attempt(1 + parse_arguments().retries),
+    #    wait=wait_random_exponential(multiplier=1, max=10),
+    #    retry=retry_if_exception(should_retry_exception),
+    #    before_sleep=before_sleep_log(retry_logger, logging.WARNING)
+    #)
+    @retry(
+        # Only retry if the error is specifically a 429
+        retry=retry_if_exception(lambda e: isinstance(e, requests.HTTPError) and e.response.status_code == 429),
+        wait=wait_exponential(multiplier=2, min=5, max=60), 
+        stop=stop_after_attempt(5)
     )
     async def download_image(self, image_api_item: Dict[str, Any], base_output_path: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """Downloads a single image, detects extension, saves, with retries."""
@@ -578,12 +587,19 @@ class CivitaiDownloader:
              self.logger.error(f"Error writing metadata to {output_path_final}: {e}", exc_info=True); return False, None
 
     # --- API Fetching Method ---
-    @retry( 
-        stop=stop_after_attempt(1 + parse_arguments().retries),
-        wait=wait_random_exponential(multiplier=1, max=10),
-        retry=retry_if_exception(should_retry_exception),
-        before_sleep=before_sleep_log(retry_logger, logging.WARNING)
+
+    @retry(
+    # Only retry if the error is specifically a 429
+    retry=retry_if_exception(lambda e: isinstance(e, requests.HTTPError) and e.response.status_code == 429),
+    wait=wait_exponential(multiplier=2, min=5, max=60), 
+    stop=stop_after_attempt(5)
     )
+    #@retry( 
+    #    stop=stop_after_attempt(1 + parse_arguments().retries),
+    #    wait=wait_random_exponential(multiplier=1, max=10),
+    #    retry=retry_if_exception(should_retry_exception),
+    #    before_sleep=before_sleep_log(retry_logger, logging.WARNING)
+    #)
     async def _fetch_api_page(self, url: str) -> Optional[Dict[str, Any]]:
         """Fetches a single page from the Civitai images API, with retries."""
         if url in self.visited_api_urls: return None
@@ -592,10 +608,19 @@ class CivitaiDownloader:
         try:
             async with self.semaphore: response = await client.get(url)
 
+            if response.status_code == 429:
+                print(f"Rate limited. Waiting to retry...")
+                response.raise_for_status() # This forces Tenacity to start the timer
+        
             # Handle non-retryable client errors (4xx)
             if 400 <= response.status_code < 500:
-                if response.status_code == 404: self.logger.warning(f"API request returned 404 Not Found for {url}"); return None
-                else: self.logger.error(f"API Client Error {response.status_code} for {url} (No Retry)"); self.failed_urls.append(url); return None
+                if response.status_code == 404: 
+                    self.logger.warning(f"API request returned 404 Not Found for {url}")
+                    return None
+                else: 
+                    self.logger.error(f"API Client Error {response.status_code} for {url} (No Retry)")
+                    self.failed_urls.append(url)
+                    return None
 
             # --- Specific Handling for 500 Errors ---
             if response.status_code == 500:
@@ -796,12 +821,25 @@ class CivitaiDownloader:
             self.logger.info(f"Running sorting for: {target_dir}"); await self._sort_images_by_model_name(target_dir)
 
     # --- Tag Search Methods ---
-    @retry( stop=stop_after_attempt(1 + parse_arguments().retries), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
+    @retry(
+        # Only retry if the error is specifically a 429
+        retry=retry_if_exception(lambda e: isinstance(e, requests.HTTPError) and e.response.status_code == 429),
+        wait=wait_exponential(multiplier=2, min=5, max=60), 
+        stop=stop_after_attempt(5)
+    )
+    #@retry( stop=stop_after_attempt(1 + parse_arguments().retries), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
     async def _search_models_by_tag_page(self, url: str, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         """Helper: Fetches one page of model search results, with retries."""
         self.logger.debug(f"Fetching models page: {url}")
         async with self.semaphore: response = await client.get(url)
-        if 400 <= response.status_code < 500: self.logger.error(f"Model search Client Error {response.status_code} for {url}"); self.failed_search_requests.append(url); return None
+        if response.status_code == 429:
+            print(f"Rate limited. Waiting to retry...")
+            response.raise_for_status() # This forces Tenacity to start the timer
+        
+        elif 400 <= response.status_code < 500: 
+            self.logger.error(f"Model search Client Error {response.status_code} for {url}")
+            self.failed_search_requests.append(url)
+            return None
         response.raise_for_status()
         try: return response.json()
         except json.JSONDecodeError as e: self.logger.error(f"JSON Decode Error model search {url}: {e}"); self.failed_search_requests.append(url); return None
