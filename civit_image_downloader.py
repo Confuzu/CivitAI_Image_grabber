@@ -25,6 +25,7 @@ RESET = "\033[0m"
 # --- Tenacity for Retries ---
 try:
     from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log, RetryError
+    from tenacity.stop import stop_base
 except ImportError:
     print("Error: 'tenacity' library not found. Please install it using: pip install tenacity")
     sys.exit(1)
@@ -58,6 +59,9 @@ DEFAULT_TIMEOUT: int = 60
 DEFAULT_RETRIES: int = 2
 DEFAULT_MAX_PATH_LENGTH: int = 240
 
+# Global retry count (set before creating downloader instance)
+CURRENT_RETRY_COUNT: int = DEFAULT_RETRIES
+
 # =======================
 # --- Logging Setup ---
 # =======================
@@ -87,13 +91,19 @@ if not logger.handlers:
 # Configure the conditions under which tenacity should retry operations.
 retry_logger: logging.Logger = logging.getLogger('CivitaiDownloader')
 RETRYABLE_EXCEPTIONS: Tuple[type[Exception], ...] = ( httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, ConnectionResetError )
-RETRYABLE_STATUS_CODES: set[int] = { 500, 502, 503, 504 }
+RETRYABLE_STATUS_CODES: set[int] = { 429, 500, 502, 503, 504 }  # Added 429 for rate limiting
 
 def is_retryable_http_status(exception: BaseException) -> bool:
     return isinstance(exception, httpx.HTTPStatusError) and exception.response.status_code in RETRYABLE_STATUS_CODES
 
 def should_retry_exception(exception: BaseException) -> bool:
     return isinstance(exception, RETRYABLE_EXCEPTIONS) or is_retryable_http_status(exception)
+
+# Custom stop condition that uses global retry count
+class stop_after_dynamic_attempt(stop_base):
+    """Stop after a dynamically determined number of attempts."""
+    def __call__(self, retry_state):
+        return retry_state.attempt_number > (1 + CURRENT_RETRY_COUNT)
 
 # ===========================
 # --- Argument Parser ---
@@ -106,10 +116,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--redownload", type=int, choices=[1, 2], default=2, help="Allow re-downloading tracked images: 1=Yes, 2=No.")
     parser.add_argument("--mode", type=int, choices=[1, 2, 3, 4], required=not sys.stdin.isatty(), help="Download mode (required if not interactive).")
     parser.add_argument("--tags", help="Tag(s) for Mode 3 (comma-separated).")
-    parser.add_argument("--disable_prompt_check", choices=['y', 'n'], default='n', help="Disable prompt check in Mode 3 (y/n).")
+    parser.add_argument("--disable_prompt_check", choices=['y', 'n'], default='n', help="Disable prompt check in Mode 3 and Mode 4 (y/n).")
     parser.add_argument("--username", help="Username(s) for Mode 1 (comma-separated).")
     parser.add_argument("--model_id", help="Model ID(s) for Mode 2 (comma-separated, numeric).")
     parser.add_argument("--model_version_id", help="Model Version ID(s) for Mode 4 (comma-separated, numeric).")
+    parser.add_argument("--filter_tags", help="Filter by tag(s) in Mode 4 (comma-separated). Only downloads images matching these tags.")
     parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR, help="Base directory for downloads.")
     parser.add_argument("--semaphore_limit", type=int, default=DEFAULT_SEMAPHORE_LIMIT, help="Max concurrent downloads/API calls.")
     parser.add_argument("--no_sort", action='store_true', help="Disable sorting images into model subfolders.")
@@ -391,8 +402,8 @@ class CivitaiDownloader:
         image_key = f"{str(image_id)}_{quality}"
         query = "SELECT 1 FROM tracked_images WHERE image_key = ? LIMIT 1"
         try:
-            # Reads are generally thread-safe with default isolation
-            # async with self.tracking_lock:
+            # Use lock to prevent TOCTOU race conditions with concurrent checks
+            async with self.tracking_lock:
                 cursor = self.db_conn.cursor()
                 cursor.execute(query, (image_key,))
                 exists = cursor.fetchone() is not None
@@ -437,8 +448,8 @@ class CivitaiDownloader:
         # ===================================
         # --- Core Download/File Methods ---
         # ===================================
-    @retry( # Static decorator using startup retry count
-        stop=stop_after_attempt(1 + parse_arguments().retries),
+    @retry(
+        stop=stop_after_dynamic_attempt(),
         wait=wait_random_exponential(multiplier=1, max=10),
         retry=retry_if_exception(should_retry_exception),
         before_sleep=before_sleep_log(retry_logger, logging.WARNING)
@@ -578,8 +589,8 @@ class CivitaiDownloader:
              self.logger.error(f"Error writing metadata to {output_path_final}: {e}", exc_info=True); return False, None
 
     # --- API Fetching Method ---
-    @retry( 
-        stop=stop_after_attempt(1 + parse_arguments().retries),
+    @retry(
+        stop=stop_after_dynamic_attempt(),
         wait=wait_random_exponential(multiplier=1, max=10),
         retry=retry_if_exception(should_retry_exception),
         before_sleep=before_sleep_log(retry_logger, logging.WARNING)
@@ -658,8 +669,8 @@ class CivitaiDownloader:
         """Processes image items: checks skip conditions, creates download tasks."""
         tasks = []; mode_specific_info = mode_specific_info or {}
         tag_to_check = mode_specific_info.get('tag_to_check'); disable_prompt_check = mode_specific_info.get('disable_prompt_check', False); current_tag = mode_specific_info.get('current_tag')
-        # DEBUG: Log first item structure to understand API response
-        if items and len(items) > 0:
+        # DEBUG: Log first item structure to understand API response (only if debug enabled)
+        if self.logger.isEnabledFor(logging.DEBUG) and items and len(items) > 0:
             first_item = items[0]
             self.logger.debug(f"DEBUG - First item keys: {list(first_item.keys())}")
             raw_meta = first_item.get("meta")
@@ -796,7 +807,7 @@ class CivitaiDownloader:
             self.logger.info(f"Running sorting for: {target_dir}"); await self._sort_images_by_model_name(target_dir)
 
     # --- Tag Search Methods ---
-    @retry( stop=stop_after_attempt(1 + parse_arguments().retries), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
+    @retry(stop=stop_after_dynamic_attempt(), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
     async def _search_models_by_tag_page(self, url: str, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         """Helper: Fetches one page of model search results, with retries."""
         self.logger.debug(f"Fetching models page: {url}")
@@ -1054,14 +1065,31 @@ class CivitaiDownloader:
             
 
             else: # Modes 1, 2, 4 (Username, ModelID, ModelVersionID)
+                # Get filter tags and prompt check option for Mode 4
+                filter_tags_mode4 = None
+                disable_prompt_check_mode4 = False
+                if self.mode == '4':
+                    filter_tags_mode4 = self._get_filter_tags()
+                    if filter_tags_mode4:
+                        disable_prompt_check_mode4 = self._get_disable_prompt_check()
+                        self.logger.info(f"Mode 4 Tag Filtering: {filter_tags_mode4}, Prompt Check: {'Disabled' if disable_prompt_check_mode4 else 'Enabled'}")
+
                 for idt, ident in identifiers_to_process:
                      result_key = f"{idt}:{ident}"; valid, reason = await self._validate_identifier_basic(ident, idt)
                      if not valid: self.run_results[result_key].update({'status':'Failed (Validation)', 'reason': reason}); continue
-                     target_dir, url = "", ""; url_params = f"&nsfw=X&sort=Newest" if idt == 'username' else "&nsfw=X"
+                     target_dir, url, mode_info = "", "", None
+                     url_params = f"&nsfw=X&sort=Newest" if idt == 'username' else "&nsfw=X"
                      if idt == 'username': target_dir = os.path.join(option_folder, self._clean_path_component(ident)); url = f"{self.base_url}?username={ident}{url_params}"
                      elif idt == 'model': target_dir = os.path.join(option_folder, f"model_{ident}"); url = f"{self.base_url}?modelId={ident}{url_params}"
-                     elif idt == 'modelVersion': target_dir = os.path.join(option_folder, f"modelVersion_{ident}"); url = f"{self.base_url}?modelVersionId={ident}{url_params}"
-                     if target_dir and url: os.makedirs(target_dir, exist_ok=True); tasks.append(self._run_paginated_download(url, target_dir, parent_result_key=result_key))
+                     elif idt == 'modelVersion':
+                         target_dir = os.path.join(option_folder, f"modelVersion_{ident}")
+                         url = f"{self.base_url}?modelVersionId={ident}{url_params}"
+                         # Apply filter tags for Mode 4 if provided
+                         if filter_tags_mode4:
+                             # Use first filter tag as the tag to check (combine if multiple)
+                             tag_to_check = "_".join(filter_tags_mode4)
+                             mode_info = {'tag_to_check': tag_to_check, 'disable_prompt_check': disable_prompt_check_mode4, 'current_tag': None}
+                     if target_dir and url: os.makedirs(target_dir, exist_ok=True); tasks.append(self._run_paginated_download(url, target_dir, mode_info, parent_result_key=result_key))
                      else: self.run_results[result_key].update({'status':'Failed', 'reason':'Internal setup error'})
                 # --- Execute all collected tasks for modes 1, 2, 4 ---
                 if tasks:
@@ -1256,6 +1284,27 @@ class CivitaiDownloader:
             self.logger.error("Model Version ID (--model_version_id) required for Mode 4 in non-interactive mode.");
             print("Error: Model Version ID required for Mode 4.");
             sys.exit(1)
+
+    def _get_filter_tags(self) -> Optional[List[str]]:
+        """Gets filter tags for Mode 4 from args or interactive prompt. Returns None if not specified."""
+        tags_raw = None
+        if self.args.filter_tags:
+            tags_raw = self.args.filter_tags
+        elif self._is_interactive_mode():
+            tags_in = input("Enter filter tag(s) (comma-separated, optional, press Enter to skip): ").strip()
+            if tags_in:
+                tags_raw = tags_in
+            else:
+                return None  # User chose not to filter
+        else:
+            return None  # No filter tags in non-interactive mode without --filter_tags
+
+        # Process raw tags
+        if tags_raw:
+            tags = [t.strip().replace(" ", "_") for t in tags_raw.split(',') if t.strip()]
+            if tags:
+                return tags
+        return None
 
     # --- Utility and Reporting Methods ---
     def _create_option_folder(self, option_name: str) -> str:
@@ -1526,8 +1575,8 @@ class CivitaiDownloader:
         if mode == 1: relevant_args = ['username']
         elif mode == 2: relevant_args = ['model_id']
         elif mode == 3: relevant_args = ['tags', 'disable_prompt_check']
-        elif mode == 4: relevant_args = ['model_version_id']
-        all_mode_args = ['username', 'model_id', 'model_version_id', 'tags', 'disable_prompt_check']
+        elif mode == 4: relevant_args = ['model_version_id', 'filter_tags', 'disable_prompt_check']
+        all_mode_args = ['username', 'model_id', 'model_version_id', 'tags', 'filter_tags', 'disable_prompt_check']
         for argn in all_mode_args:
             argval = getattr(self.args, argn, None)
             is_default = False
@@ -1764,6 +1813,8 @@ class CivitaiDownloader:
 # ===================
 if __name__ == "__main__":
     cli_args = parse_arguments()
+    # Set global retry count from args before creating downloader
+    CURRENT_RETRY_COUNT = cli_args.retries
     is_cli = cli_args.mode is not None
     print(f"--- Civitai Downloader v{SCRIPT_VERSION} ---")
     print(f"Running in {'command-line' if is_cli else 'interactive'} mode.")
