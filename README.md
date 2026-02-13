@@ -55,6 +55,8 @@ the script will ask you to:
     *   Mode 3: `Enter tags (, separated):`
     *   Mode 3: `Disable prompt check? (y/n) [default: n]:` (Check if tag words must be in the image prompt)
     *   Mode 4: `Enter model version ID(s) (numeric, , separated):`
+    *   Mode 4: `Enter filter tag(s) (comma-separated, optional, press Enter to skip):` (Optional: filter by tags)
+    *   Mode 4: `Disable prompt check? (y/n) [default: n]:` (If filter tags are provided)
 
 If you just hit enter it will use the Default values of that Option if it has a default value.  <br /> 
  <br /> 
@@ -70,10 +72,11 @@ Provide arguments directly on the command line. Unspecified arguments will use t
 *   `--redownload {1,2}` (1=Yes, 2=No, Default: 2)
 *   `--mode {1,2,3,4}` (**Required**)
 *   `--tags TAGS` (Comma-separated, required for Mode 3)
-*   `--disable_prompt_check {y,n}` (Default: n)
+*   `--disable_prompt_check {y,n}` (Default: n, works with Mode 3 and Mode 4) 
 *   `--username USERNAMES` (Comma-separated, required for Mode 1)
 *   `--model_id IDS` (Comma-separated, numeric, required for Mode 2)
 *   `--model_version_id IDS` (Comma-separated, numeric, required for Mode 4)
+*   `--filter_tags TAGS` (Comma-separated, optional for Mode 4, filters images by tags)
 *   `--output_dir PATH` (Default: "image_downloads")
 *   `--semaphore_limit INT` (Default: 5)
 *   `--no_sort` (Disables model subfolder sorting, Default: False/Sorting enabled)
@@ -93,6 +96,10 @@ Provide arguments directly on the command line. Unspecified arguments will use t
 *   Download SD images for tag "sci-fi", disabling prompt check, no redownloads:
     ```bash
     python civit_image_downloader.py --mode 3 --tags "sci-fi" --disable_prompt_check y --redownload 2
+    ```
+*   Download images from model version 123456, filtered by tags "anime" and "portrait":
+    ```bash
+    python civit_image_downloader.py --mode 4 --model_version_id "123456" --filter_tags "anime,portrait" --disable_prompt_check y
     ```
 
 ## Mixed Mode
@@ -205,6 +212,26 @@ python migrate_json_to_sqlite.py
 
 
 # Update History
+
+## 1.4 Bug Fixes & New Feature <br />
+
+
+1.  **Mode 4 Tag Filtering (New Feature):** <br />
+    **Added `--filter_tags` argument:** Mode 4 (model version ID downloads) now supports filtering images by tags, similar to Mode 3. Users can specify one or more tags to only download images that match those tags. <br />
+    **Prompt Check Support:** The `--disable_prompt_check` option now works with Mode 4 <br />
+    
+2.  **HTTP 429 Rate Limit Handling:** <br />
+    Added proper handling for HTTP 429 (Too Many Requests) responses from the CivitAI API. The script now automatically retries with exponential backoff when rate limits are encountered, preventing failed downloads due to API throttling. <br />
+
+4.  **Fixed Dynamic Retry Configuration:** <br />
+    Fixed a bug where the `--retries` argument was not being properly respected due to static decorator evaluation. The retry count is now dynamically determined at runtime, allowing users to customize the number of retry attempts via command-line arguments. <br />
+
+5.  **Enhanced Database Thread Safety:** <br />
+    Enabled async locking in database read operations to prevent race conditions when multiple concurrent downloads check if an image has already been downloaded. This ensures data consistency in high-concurrency scenarios. <br />
+
+6.  **Performance Optimization:** <br />
+    Optimized debug logging to only execute expensive operations (metadata extraction, JSON parsing) when debug level logging is actually enabled, improving performance in production use. <br />
+
 
 ## 1.3 New Feature & Update <br />
 
