@@ -761,7 +761,13 @@ class CivitaiDownloader:
              model_name_for_meta = None
              checkpoint_name = str(meta.get("Model", "")).strip() if meta and meta.get("Model") else None
 
-             # If no Model in meta, try to extract from civitaiResources
+             # Bug #42 fix: Detect and skip URN-format Model names (e.g., "urn_air_sdxl_checkpoint_civitai_101055@128078")
+             # These are ComfyUI-style resource identifiers, not human-readable model names
+             if checkpoint_name and checkpoint_name.lower().startswith("urn") and ("civitai" in checkpoint_name.lower() or "@" in checkpoint_name):
+                 self.logger.debug(f"Model field contains URN format ({checkpoint_name[:50]}...), will extract from civitaiResources instead")
+                 checkpoint_name = None  # Force extraction from civitaiResources
+
+             # If no Model in meta (or was URN format), try to extract from civitaiResources
              if not checkpoint_name and meta:
                  civitai_resources = meta.get("civitaiResources", [])
                  if isinstance(civitai_resources, list):
@@ -795,6 +801,10 @@ class CivitaiDownloader:
         identifier_reason: Optional[str] = None; identifier_api_items: int = 0
         result_entry = self._get_result_entry(parent_result_key, model_id)
         if not result_entry: self.logger.error(f"Result entry missing for {parent_result_key}/{model_id}"); return
+
+        # Bug #50 enhancement: Print status message when starting to process an identifier
+        identifier_display = parent_result_key if not model_id else f"{parent_result_key} → model_{model_id}"
+        print(f"\n{'='*60}\nStarting: {identifier_display}\n{'='*60}")
 
         while url:
              page_count += 1
@@ -836,6 +846,11 @@ class CivitaiDownloader:
                  if items:
                       if identifier_status == 'Pending': identifier_status = 'Processing'
                       await self._process_api_items(items, target_dir, mode_specific_info, parent_result_key, model_id)
+
+                      # Bug #50 enhancement: Print progress update after processing each page
+                      current_downloads = result_entry.get('success_count', 0)
+                      current_skipped = result_entry.get('skipped_count', 0)
+                      print(f"[{identifier_display}] Page {page_count}: Downloaded {current_downloads} | Skipped {current_skipped} | API items processed: {identifier_api_items}")
                  elif page_count == 1: # No items on the first page (and not a "Not Found" error)
                       identifier_status = 'Completed (No Items Found)'
                       self.logger.warning(f"No items found for {os.path.basename(target_dir)} (User/Model/Version may have no images).")
@@ -868,6 +883,15 @@ class CivitaiDownloader:
         # Sorting
         if not self.disable_sorting and identifier_status.startswith('Completed'):
             self.logger.info(f"Running sorting for: {target_dir}"); await self._sort_images_by_model_name(target_dir)
+
+        # Bug #50 enhancement: Print completion message with summary
+        total_downloads = result_entry.get('success_count', 0)
+        total_skipped = result_entry.get('skipped_count', 0)
+        total_api_items = result_entry.get('api_items', 0)
+        print(f"\n{'='*60}\nCompleted: {identifier_display}")
+        print(f"Status: {identifier_status}")
+        print(f"Downloaded: {total_downloads} | Skipped: {total_skipped} | API items: {total_api_items}")
+        print(f"{'='*60}\n")
 
     # --- Tag Search Methods ---
     @retry(stop=stop_after_dynamic_attempt(), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
@@ -1017,6 +1041,13 @@ class CivitaiDownloader:
                  # Handle case where identifier getter returned empty list or id_type missing
                  raise ValueError(f"Failed to retrieve valid identifiers for mode {self.mode}.")
             # --- End Identifier Collection ---
+
+            # Bug #50 enhancement: Print summary of what will be processed
+            identifier_names = [ident for _, ident in identifiers_to_process]
+            print(f"\n{'='*60}")
+            print(f"Processing {len(identifiers_to_process)} {id_type}(s): {', '.join(identifier_names)}")
+            print(f"Downloads will run concurrently (in parallel)")
+            print(f"{'='*60}\n")
 
             # --- 2. Initialize Results Structure ---
             for idt, ident in identifiers_to_process:
