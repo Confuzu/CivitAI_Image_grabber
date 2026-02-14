@@ -213,6 +213,19 @@ python migrate_json_to_sqlite.py
 
 # Update History
 
+## 1.5 Bug Fixes <br />
+
+1.  **Fixed Model Name Extraction (Bug #38):** <br />
+    Images now correctly sort into model-specific folders instead of being incorrectly placed in `invalid_metadata`. The script now extracts model names from the CivitAI API's `civitaiResources` field when the legacy `Model` field is not present. <br />
+    **Extraction Priority:** Existing Model field → civitaiResources checkpoint → baseModel → invalid_metadata <br />
+    
+2.  **Fixed Download Tracking Cross-Contamination (Bug #47):** <br />
+    Database tracking keys now include query context (mode + target identifier) to prevent false "already downloaded" detections across different query types. Previously, an image downloaded via model search would be incorrectly skipped when downloading that same image via username search. <br /> 
+    **New Key Format:** `{mode}:{target}_{image_id}_{quality}` (e.g., `username:Exorvious_12345_SD`) <br />
+    Users can now collect complete image sets for each query type without cross-contamination. <br />
+    
+
+
 ## 1.4 Bug Fixes & New Feature <br />
 
 
