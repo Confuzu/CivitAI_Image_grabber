@@ -396,10 +396,22 @@ class CivitaiDownloader:
         return True, None
 
     # --- SQLite Tracking Methods ---
-    async def check_if_image_downloaded(self, image_id: str, quality: str) -> bool:
-        """Checks if an image exists in the tracking database."""
+    async def check_if_image_downloaded(self, image_id: str, quality: str, context: Optional[str] = None) -> bool:
+        """Checks if an image exists in the tracking database.
+
+        Args:
+            image_id: The image ID
+            quality: Image quality (SD/HD)
+            context: Optional context string in format "type:identifier" (e.g., "username:Exorvious")
+                     to prevent cross-contamination between different query types.
+        """
         if not self.db_conn: return False # Assume not downloaded if DB error
-        image_key = f"{str(image_id)}_{quality}"
+        # Include context in key to prevent cross-contamination (Bug #47 fix)
+        if context:
+            image_key = f"{context}_{str(image_id)}_{quality}"
+        else:
+            # Fallback for backwards compatibility
+            image_key = f"{str(image_id)}_{quality}"
         query = "SELECT 1 FROM tracked_images WHERE image_key = ? LIMIT 1"
         try:
             # Use lock to prevent TOCTOU race conditions with concurrent checks
@@ -412,11 +424,27 @@ class CivitaiDownloader:
             self.logger.error(f"DB error checking if image {image_key} downloaded: {e}", exc_info=True)
             return False # Assume not downloaded on error
 
-    async def mark_image_as_downloaded(self, image_id: str, image_path: str, quality: str, tags: Optional[List[str]] = None, url: Optional[str] = None, checkpoint_name: Optional[str] = None) -> None:
-        """Marks image as downloaded in DB (INSERT OR REPLACE image, DELETE/INSERT tags)."""
+    async def mark_image_as_downloaded(self, image_id: str, image_path: str, quality: str, tags: Optional[List[str]] = None, url: Optional[str] = None, checkpoint_name: Optional[str] = None, context: Optional[str] = None) -> None:
+        """Marks image as downloaded in DB (INSERT OR REPLACE image, DELETE/INSERT tags).
+
+        Args:
+            image_id: The image ID
+            image_path: Path where the image was saved
+            quality: Image quality (SD/HD)
+            tags: Optional list of tags
+            url: Optional source URL
+            checkpoint_name: Optional model/checkpoint name
+            context: Optional context string in format "type:identifier" (e.g., "username:Exorvious")
+                     to prevent cross-contamination between different query types.
+        """
         if not self.db_conn: return
         image_id_str = str(image_id)
-        image_key = f"{image_id_str}_{quality}"
+        # Include context in key to prevent cross-contamination (Bug #47 fix)
+        if context:
+            image_key = f"{context}_{image_id_str}_{quality}"
+        else:
+            # Fallback for backwards compatibility
+            image_key = f"{image_id_str}_{quality}"
         current_date = datetime.now().strftime("%Y-%m-%d - %H:%M")
         tags = tags or []
         unique_tags = sorted(list(set(t for t in tags if t))) # Ensure unique, non-empty
@@ -558,8 +586,17 @@ class CivitaiDownloader:
                      except OSError:
                           pass
                       
-    async def _write_meta_data(self, meta: Optional[Dict[str, Any]], base_output_path_no_ext: str, image_id: str, username: Optional[str]) -> Tuple[bool, Optional[str]]:
-        """Writes metadata to a .txt file."""
+    async def _write_meta_data(self, meta: Optional[Dict[str, Any]], base_output_path_no_ext: str, image_id: str, username: Optional[str], base_model: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Writes metadata to a .txt file.
+
+        Args:
+            meta: Metadata dictionary extracted from API response
+            base_output_path_no_ext: Base path for output file (without extension)
+            image_id: Image ID
+            username: Username associated with the image
+            base_model: Optional baseModel from API (e.g., "Flux.1 D", "SDXL 1.0") to use
+                        when Model field is missing in metadata (Bug #38 fix)
+        """
         username = username or 'unknown_user'; meta = meta or {}
         content_lines = []; meta_filename_suffix = ""
         if not meta or all(str(v).strip() == '' for v in meta.values()):
@@ -567,7 +604,13 @@ class CivitaiDownloader:
              content_lines = ["No metadata available.", f"URL: https://civitai.com/images/{image_id}?username={username}"]
         else:
              meta_filename_suffix = "_meta.txt"
-             content_lines = [f"{k}: {str(v) if v is not None else ''}" for k, v in meta.items()]
+             # Bug #38 fix: Add Model field from baseModel if missing
+             if base_model and 'Model' not in meta:
+                 # Insert Model at the beginning for consistency with old metadata format
+                 content_lines = [f"Model: {base_model}"]
+                 content_lines.extend([f"{k}: {str(v) if v is not None else ''}" for k, v in meta.items()])
+             else:
+                 content_lines = [f"{k}: {str(v) if v is not None else ''}" for k, v in meta.items()]
 
         directory = os.path.dirname(base_output_path_no_ext)
         base_filename = os.path.basename(base_output_path_no_ext)
@@ -686,7 +729,7 @@ class CivitaiDownloader:
             should_skip, skip_reason = False, None
             result_entry = self._get_result_entry(parent_result_key, model_id)
             # Redownload Check
-            if self.allow_redownload == 2 and await self.check_if_image_downloaded(str(image_id), self.quality):
+            if self.allow_redownload == 2 and await self.check_if_image_downloaded(str(image_id), self.quality, context=parent_result_key):
                 skip_reason = "Already tracked"; should_skip = True
                 if current_tag: # Update tags in DB if needed? Requires SELECT+UPDATE - skip for now. Pass.
                     pass # Simpler: Don't update tags on skipped items via this path.
@@ -714,11 +757,31 @@ class CivitaiDownloader:
         success, final_image_path, reason = await self.download_image(item, target_dir)
         if success and final_image_path:
              meta = extract_image_meta(item); username = item.get("username")
+             # Bug #38 fix: Extract model name from civitaiResources or baseModel
+             model_name_for_meta = None
              checkpoint_name = str(meta.get("Model", "")).strip() if meta and meta.get("Model") else None
+
+             # If no Model in meta, try to extract from civitaiResources
+             if not checkpoint_name and meta:
+                 civitai_resources = meta.get("civitaiResources", [])
+                 if isinstance(civitai_resources, list):
+                     # Look for checkpoint type resource
+                     for resource in civitai_resources:
+                         if isinstance(resource, dict) and resource.get("type") == "checkpoint":
+                             model_name_for_meta = resource.get("modelVersionName")
+                             checkpoint_name = model_name_for_meta
+                             break
+
+                 # Fallback to baseModel only if no checkpoint found in civitaiResources
+                 if not model_name_for_meta:
+                     base_model = item.get("baseModel")
+                     if base_model:
+                         model_name_for_meta = base_model
+                         checkpoint_name = base_model
              if result_entry: result_entry['success_count'] += 1
              tags_to_mark = [current_tag] if current_tag else []
-             await self.mark_image_as_downloaded(str(image_id), final_image_path, self.quality, tags=tags_to_mark, url=item.get('url'), checkpoint_name=checkpoint_name)
-             await self._write_meta_data(meta, base_path_no_ext, str(image_id), username)
+             await self.mark_image_as_downloaded(str(image_id), final_image_path, self.quality, tags=tags_to_mark, url=item.get('url'), checkpoint_name=checkpoint_name, context=parent_result_key)
+             await self._write_meta_data(meta, base_path_no_ext, str(image_id), username, base_model=model_name_for_meta)
              if not meta or all(str(v).strip() == '' for v in meta.values()):
                  if result_entry: result_entry['no_meta_count'] += 1
         elif not success:
