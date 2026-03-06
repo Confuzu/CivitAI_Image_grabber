@@ -1,4 +1,4 @@
-# Civit Image grabber 2.0
+# Civit Image grabber 2.1
 
 It downloads all the images and Videos from a provided Username, Model ID or Model TAG from CivitAI. 
 Should the API not spit out all the data for all images then I'm sorry. 
