@@ -89,6 +89,7 @@ Provide arguments directly on the command line. Unspecified arguments will use t
 *   `--retries INT` (Default: 2)
 *   `--max_images INT` (Limit total images downloaded, Default: unlimited) 
 *   `--max_per_model INT` (Limit images per model in tag searches, Default: unlimited) 
+*   `--deep_scan` (Enable deep scan for users with 50K+ images, Mode 1 only, Default: False)
 
 ## Examples
 
@@ -124,12 +125,12 @@ Provide arguments directly on the command line. Unspecified arguments will use t
     ```bash
     python civit_image_downloader.py --mode 1 --username "artist1" --no_videos
     ```
- *   Download ALL images from a user (50K+ images) using deep scan:
+*   Download ALL images from a user (50K+ images) using deep scan:
     ```bash
-    python civit_image_downloader.py --mode 1 --username "serget2" --deep_scan
+    python civit_image_downloader.py --mode 1 --username "Artist1" --deep_scan
     ```   
 
-## Deep Scan (`--deep_scan`)
+## Deep Scan
 
 CivitAI's API caps pagination at ~50,000 images per user. Users with more than 50K images will silently get incomplete downloads. Pass `--deep_scan` to run additional passes that retrieve images beyond this limit using bi-directional pagination and per-model-version queries. Only applies to Mode 1 (username search). Without this flag, the script warns when a user hits the cap.
 
@@ -261,7 +262,7 @@ python migrate_json_to_sqlite.py
 
 # Update History
 
-# 2.1 Deep Scan -- 50K API Pagination Cap Bypass (Bug #52)
+## 2.1 Deep Scan -- 50K API Pagination Cap Bypass
 
 **New `--deep_scan` flag** for Mode 1 (username search) that retrieves images beyond the CivitAI API's 50K pagination cap.
 
@@ -306,7 +307,7 @@ The 50K cap is a hard API limitation. Deep scan maximizes what's retrievable but
 
 ```bash
 # Basic deep scan
-python civit_image_downloader.py --mode 1 --username "prolific_user" --deep_scan
+python civit_image_downloader.py --mode 1 --username "user" --deep_scan
 
 # Multiple users -- deep scan applies to all that hit the cap
 python civit_image_downloader.py --mode 1 --username "user1,user2,user3" --deep_scan
