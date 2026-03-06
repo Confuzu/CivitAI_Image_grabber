@@ -56,7 +56,7 @@ DEFAULT_SEMAPHORE_LIMIT: int = 5
 DEFAULT_OUTPUT_DIR: str = "image_downloads"
 DATABASE_FILENAME: str = "tracking_database.sqlite" # <--- SQLite DB filename
 LOG_FILENAME_TEMPLATE: str = "civit_image_downloader_log_{version}.txt"
-SCRIPT_VERSION: str = "2.0"
+SCRIPT_VERSION: str = "1.9"
 DEFAULT_TIMEOUT: int = 60
 DEFAULT_RETRIES: int = 2
 DEFAULT_MAX_PATH_LENGTH: int = 240
@@ -131,6 +131,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max_images", type=int, default=None, help="Maximum number of images to download (default: unlimited).")
     parser.add_argument("--max_per_model", type=int, default=None, help="Maximum images per model during tag searches (default: unlimited).")
     parser.add_argument("--no_videos", action='store_true', help="Skip video files, download images only.")
+    parser.add_argument("--deep_scan", action='store_true', help="Enable deep scan for users exceeding the 50K API pagination cap. Uses bi-directional pagination and per-model-version queries to retrieve all images.")
     return parser.parse_args()
 
 # ==========================
@@ -224,6 +225,11 @@ class CivitaiDownloader:
         self.per_model_counts: Dict[int, int] = {}  # {model_version_id: count}
         self.failed_search_requests: List[str] = []
 
+        # --- Deep Scan (Bug #52) ---
+        self.deep_scan: bool = args.deep_scan
+        self.discovered_model_version_ids: Dict[str, set] = {}  # {username: set of modelVersionIds}
+        self.deep_scan_stats: Dict[str, Dict[str, int]] = {}  # {username: {pass_name: new_images_count}}
+
         # --- Log Initialized Config ---
         try: os.makedirs(self.output_dir, exist_ok=True)
         except OSError as e:
@@ -235,6 +241,7 @@ class CivitaiDownloader:
         self.logger.info(f"Output Directory: {self.output_dir}")
         self.logger.info(f"Semaphore Limit: {self.semaphore_limit}, Timeout: {self.timeout}s, Retries Used: {self.num_retries}")
         self.logger.info(f"Sorting Disabled: {self.disable_sorting}, Max Path Length: {self.max_path_length}")
+        self.logger.info(f"Deep Scan: {'Enabled' if self.deep_scan else 'Disabled'}")
         self.logger.info(f"Tracking Database: {self.db_path}")
         self.logger.info(f"-------------------------------")
 
@@ -860,6 +867,12 @@ class CivitaiDownloader:
                 prompt_preview = extracted_meta.get("prompt", "")[:100]
                 self.logger.debug(f"DEBUG - Prompt preview: {prompt_preview}...")
         for item in items:
+            # Bug #52: Collect modelVersionIds for deep scan (only when enabled)
+            if self.deep_scan and parent_result_key and parent_result_key.startswith('username:'):
+                username_key = parent_result_key.split(':', 1)[1]
+                for mvid in item.get('modelVersionIds', []):
+                    self.discovered_model_version_ids.setdefault(username_key, set()).add(mvid)
+
             # Issue #8: Check global image limit (including pending tasks)
             if self.max_images and (self.images_downloaded_count + len(tasks)) >= self.max_images:
                 self.logger.info(f"Reached maximum image limit ({self.max_images}). Stopping download.")
@@ -956,28 +969,39 @@ class CivitaiDownloader:
              fail_reason = reason or "Download failed"
              self.skipped_reasons_summary[fail_reason] = self.skipped_reasons_summary.get(fail_reason, 0) + 1
 
-    async def _run_paginated_download(self, initial_url: str, target_dir: str, mode_specific_info: Optional[Dict] = None, parent_result_key: Optional[str] = None, model_id: Optional[int] = None) -> None:
-        """Handles pagination and processing for an identifier, checking for 'Not Found' errors."""
+    async def _run_paginated_download(self, initial_url: str, target_dir: str, mode_specific_info: Optional[Dict] = None, parent_result_key: Optional[str] = None, model_id: Optional[int] = None, deep_scan_pass: Optional[str] = None) -> int:
+        """Handles pagination and processing for an identifier, checking for 'Not Found' errors.
+
+        Args:
+            deep_scan_pass: If set, this is a continuation pass for deep scan (e.g., 'oldest', 'mvid:12345').
+                           Skips redownload clearing, adjusts status handling, and skips sorting.
+
+        Returns:
+            Number of API items encountered during this pagination pass.
+        """
         url: Optional[str] = initial_url; page_count: int = 0; identifier_status: str = 'Pending'
         identifier_reason: Optional[str] = None; identifier_api_items: int = 0
         result_entry = self._get_result_entry(parent_result_key, model_id)
-        if not result_entry: self.logger.error(f"Result entry missing for {parent_result_key}/{model_id}"); return
+        if not result_entry: self.logger.error(f"Result entry missing for {parent_result_key}/{model_id}"); return 0
 
         # Bug #50 enhancement: Print status message when starting to process an identifier
-        identifier_display = parent_result_key if not model_id else f"{parent_result_key} → model_{model_id}"
-        print(f"\n{'='*60}\nStarting: {identifier_display}\n{'='*60}")
+        identifier_display = parent_result_key if not model_id else f"{parent_result_key} -> model_{model_id}"
+        if deep_scan_pass:
+            print(f"\n{'-'*60}\nDeep scan pass [{deep_scan_pass}]: {identifier_display}\n{'-'*60}")
+        else:
+            print(f"\n{'='*60}\nStarting: {identifier_display}\n{'='*60}")
 
-        # Issue #58: Clear target history if re-downloading
-        if self.allow_redownload == 1 and parent_result_key and ':' in parent_result_key:
+        # Issue #58: Clear target history if re-downloading (only on initial pass, not deep scan)
+        if not deep_scan_pass and self.allow_redownload == 1 and parent_result_key and ':' in parent_result_key:
             target_type, target_value = parent_result_key.split(':', 1)
             cleared_count = self.clear_target_history(target_type, target_value)
             if cleared_count > 0:
-                print(f"🗑️  Cleared {cleared_count} previous downloads for {target_type}: {target_value}")
+                print(f"Cleared {cleared_count} previous downloads for {target_type}: {target_value}")
                 self.logger.info(f"Cleared {cleared_count} tracked images before re-downloading {parent_result_key}")
 
         while url:
              page_count += 1
-             self.logger.info(f"Requesting API page {page_count} for {os.path.basename(target_dir)}")
+             self.logger.info(f"Requesting API page {page_count} for {os.path.basename(target_dir)}{f' [{deep_scan_pass}]' if deep_scan_pass else ''}")
              page_data = await self._fetch_api_page(url) # Retries handled inside
 
              # --- Add Check for Specific "Not Found" Errors on First Page ---
@@ -997,13 +1021,14 @@ class CivitaiDownloader:
 
                  if not_found:
                       self.logger.warning(f"Identifier not found for {parent_result_key}: {identifier_reason}")
-                      identifier_status = 'Failed (Not Found)'
-                      # Update result entry immediately and stop processing this identifier
-                      result_entry['status'] = identifier_status
-                      result_entry['reason'] = identifier_reason
-                      # Print specific message to console
-                      print(f"Error for '{parent_result_key}': {identifier_reason}. Please check the identifier.")
-                      return # Stop processing this identifier completely
+                      if not deep_scan_pass:
+                          identifier_status = 'Failed (Not Found)'
+                          result_entry['status'] = identifier_status
+                          result_entry['reason'] = identifier_reason
+                          print(f"Error for '{parent_result_key}': {identifier_reason}. Please check the identifier.")
+                      else:
+                          self.logger.info(f"Deep scan pass [{deep_scan_pass}]: Not found (expected for some model versions)")
+                      return 0 # Stop processing this pass
              # --- End "Not Found" Check ---
 
              if page_data is not None: # Process page if fetch succeeded and wasn't a "Not Found" error handled above
@@ -1019,20 +1044,21 @@ class CivitaiDownloader:
                       # Bug #50 enhancement: Print progress update after processing each page
                       current_downloads = result_entry.get('success_count', 0)
                       current_skipped = result_entry.get('skipped_count', 0)
-                      print(f"[{identifier_display}] Page {page_count}: Downloaded {current_downloads} | Skipped {current_skipped} | API items processed: {identifier_api_items}")
+                      pass_label = f" [{deep_scan_pass}]" if deep_scan_pass else ""
+                      print(f"[{identifier_display}{pass_label}] Page {page_count}: Downloaded {current_downloads} | Skipped {current_skipped} | API items processed: {identifier_api_items}")
 
                       # Issue #8: Check if image limit reached, stop pagination if so
                       if self.max_images and self.images_downloaded_count >= self.max_images:
                           self.logger.info(f"Global image limit ({self.max_images}) reached. Stopping pagination.")
-                          print(f"\n✅ Reached image limit of {self.max_images}. Stopping download.")
+                          print(f"\nReached image limit of {self.max_images}. Stopping download.")
                           identifier_status = 'Completed (Limit Reached)'
                           break  # Exit pagination loop
 
                  elif page_count == 1: # No items on the first page (and not a "Not Found" error)
                       identifier_status = 'Completed (No Items Found)'
                       self.logger.warning(f"No items found for {os.path.basename(target_dir)} (User/Model/Version may have no images).")
-                      # Also print this info to console for clarity
-                      print(f"Info for '{parent_result_key}': Identifier found, but no images associated with it.")
+                      if not deep_scan_pass:
+                          print(f"Info for '{parent_result_key}': Identifier found, but no images associated with it.")
 
 
                  url = self._validate_next_page(metadata.get('nextPage'))
@@ -1049,26 +1075,214 @@ class CivitaiDownloader:
                  else: identifier_status = 'Completed (Fetch Error on Subsequent Page)'; identifier_reason = fetch_fail_reason
                  self.logger.warning(f"Stopping pagination for {os.path.basename(target_dir)}: {fetch_fail_reason}."); break
 
-        # Update final status (unless already set to Failed Not Found)
-        if result_entry and identifier_status != 'Failed (Not Found)':
-            result_entry['status'] = identifier_status
-            if identifier_reason and not result_entry.get('reason'): result_entry['reason'] = identifier_reason # Don't overwrite specific "Not Found" reason
-            result_entry['api_items'] = identifier_api_items
-            # Aggregate API items
-            if model_id is not None and parent_result_key in self.run_results: self.run_results[parent_result_key]['api_items'] += identifier_api_items
+        # Update final status
+        if deep_scan_pass:
+            # For deep scan passes, accumulate api_items without overwriting status
+            result_entry['api_items'] = result_entry.get('api_items', 0) + identifier_api_items
+            if model_id is not None and parent_result_key in self.run_results:
+                self.run_results[parent_result_key]['api_items'] += identifier_api_items
+        else:
+            # Standard pass: set status and api_items directly
+            if result_entry and identifier_status != 'Failed (Not Found)':
+                result_entry['status'] = identifier_status
+                if identifier_reason and not result_entry.get('reason'): result_entry['reason'] = identifier_reason
+                result_entry['api_items'] = identifier_api_items
+                if model_id is not None and parent_result_key in self.run_results:
+                    self.run_results[parent_result_key]['api_items'] += identifier_api_items
 
-        # Sorting
-        if not self.disable_sorting and identifier_status.startswith('Completed'):
+        # Sorting (skip for deep scan passes - sorting happens once at the end)
+        if not deep_scan_pass and not self.disable_sorting and identifier_status.startswith('Completed'):
             self.logger.info(f"Running sorting for: {target_dir}"); await self._sort_images_by_model_name(target_dir)
 
         # Bug #50 enhancement: Print completion message with summary
         total_downloads = result_entry.get('success_count', 0)
         total_skipped = result_entry.get('skipped_count', 0)
         total_api_items = result_entry.get('api_items', 0)
-        print(f"\n{'='*60}\nCompleted: {identifier_display}")
-        print(f"Status: {identifier_status}")
-        print(f"Downloaded: {total_downloads} | Skipped: {total_skipped} | API items: {total_api_items}")
-        print(f"{'='*60}\n")
+        if deep_scan_pass:
+            print(f"{'-'*60}\nDeep scan pass [{deep_scan_pass}] done: +{identifier_api_items} API items | Total: {total_downloads} downloaded, {total_skipped} skipped\n{'-'*60}")
+        else:
+            print(f"\n{'='*60}\nCompleted: {identifier_display}")
+            print(f"Status: {identifier_status}")
+            print(f"Downloaded: {total_downloads} | Skipped: {total_skipped} | API items: {total_api_items}")
+            print(f"{'='*60}\n")
+
+        return identifier_api_items
+
+    # --- Deep Scan Methods (Bug #52) ---
+    CAP_THRESHOLD: int = 49000  # If API returns this many items, we likely hit the 50K pagination cap
+
+    async def _run_deep_scan(self, username: str, target_dir: str, mode_specific_info: Optional[Dict],
+                             parent_result_key: str, initial_api_items: int) -> None:
+        """Performs deep scan passes to retrieve images beyond the 50K API pagination cap.
+
+        Strategy:
+        1. sort=Oldest pass: Paginates from the oldest images (covers the other 50K end)
+        2. Per-modelVersionId fill: For each unique modelVersionId discovered during all passes,
+           queries with username+modelVersionId to fill any remaining gaps in the middle.
+        SQLite dedup prevents re-downloading across all passes.
+        """
+        result_entry = self.run_results.get(parent_result_key)
+        if not result_entry:
+            return
+
+        downloads_before = result_entry.get('success_count', 0)
+        self.deep_scan_stats.setdefault(username, {})
+
+        print(f"\n{'#'*60}")
+        print(f"DEEP SCAN: {username}")
+        print(f"Initial pass returned {initial_api_items} API items (cap threshold: {self.CAP_THRESHOLD})")
+        print(f"Discovered {len(self.discovered_model_version_ids.get(username, set()))} unique model versions so far")
+        print(f"{'#'*60}")
+
+        # --- Pass 2: sort=Oldest (NSFW) ---
+        downloads_before_oldest = result_entry.get('success_count', 0)
+        oldest_url = f"{self.base_url}?username={quote(username, safe='')}&nsfw=X&sort=Oldest"
+        self.logger.info(f"Deep scan: Starting sort=Oldest (NSFW) pass for {username}")
+        oldest_items = await self._run_paginated_download(
+            oldest_url, target_dir, mode_specific_info, parent_result_key,
+            deep_scan_pass="sort=Oldest (NSFW)"
+        )
+        downloads_after_oldest = result_entry.get('success_count', 0)
+        new_from_oldest = downloads_after_oldest - downloads_before_oldest
+        self.deep_scan_stats[username]['sort=Oldest (NSFW)'] = new_from_oldest
+        self.logger.info(f"Deep scan sort=Oldest (NSFW): {oldest_items} API items, {new_from_oldest} new downloads")
+
+        # --- Pass 3: sort=Newest (SFW) ---
+        # The nsfw=X parameter filters to NSFW content. Without it, the API returns SFW content.
+        # Both streams have independent 50K caps, so we must scan both to get all images.
+        downloads_before_sfw = result_entry.get('success_count', 0)
+        sfw_newest_url = f"{self.base_url}?username={quote(username, safe='')}&sort=Newest"
+        self.logger.info(f"Deep scan: Starting sort=Newest (SFW) pass for {username}")
+        sfw_newest_items = await self._run_paginated_download(
+            sfw_newest_url, target_dir, mode_specific_info, parent_result_key,
+            deep_scan_pass="sort=Newest (SFW)"
+        )
+        downloads_after_sfw = result_entry.get('success_count', 0)
+        new_from_sfw_newest = downloads_after_sfw - downloads_before_sfw
+        self.deep_scan_stats[username]['sort=Newest (SFW)'] = new_from_sfw_newest
+        self.logger.info(f"Deep scan sort=Newest (SFW): {sfw_newest_items} API items, {new_from_sfw_newest} new downloads")
+
+        # --- Pass 4: sort=Oldest (SFW) ---
+        downloads_before_sfw_oldest = result_entry.get('success_count', 0)
+        sfw_oldest_url = f"{self.base_url}?username={quote(username, safe='')}&sort=Oldest"
+        self.logger.info(f"Deep scan: Starting sort=Oldest (SFW) pass for {username}")
+        sfw_oldest_items = await self._run_paginated_download(
+            sfw_oldest_url, target_dir, mode_specific_info, parent_result_key,
+            deep_scan_pass="sort=Oldest (SFW)"
+        )
+        downloads_after_sfw_oldest = result_entry.get('success_count', 0)
+        new_from_sfw_oldest = downloads_after_sfw_oldest - downloads_before_sfw_oldest
+        self.deep_scan_stats[username]['sort=Oldest (SFW)'] = new_from_sfw_oldest
+        self.logger.info(f"Deep scan sort=Oldest (SFW): {sfw_oldest_items} API items, {new_from_sfw_oldest} new downloads")
+
+        # --- Pass 5: Per-modelVersionId fill ---
+        # Snapshot the discovered set (it may grow during iteration, but we use a frozen list)
+        discovered_mvids = sorted(self.discovered_model_version_ids.get(username, set()))
+        if discovered_mvids:
+            print(f"\nDeep scan: Querying {len(discovered_mvids)} unique model versions for {username}...")
+            self.logger.info(f"Deep scan: Starting modelVersionId fill for {username} ({len(discovered_mvids)} versions)")
+
+            mvid_new_total = 0
+            consecutive_zero_new = 0  # Early termination: stop if many consecutive queries yield nothing
+            EARLY_STOP_THRESHOLD = 50  # Stop if last N mvid queries all returned 0 new downloads
+            for i, mvid in enumerate(discovered_mvids, 1):
+                downloads_before_mv = result_entry.get('success_count', 0)
+                # Query WITHOUT nsfw param to get both SFW and NSFW per model version
+                mv_url = f"{self.base_url}?username={quote(username, safe='')}&modelVersionId={mvid}&sort=Newest"
+                mv_items = await self._run_paginated_download(
+                    mv_url, target_dir, mode_specific_info, parent_result_key,
+                    deep_scan_pass=f"mvid:{mvid} ({i}/{len(discovered_mvids)})"
+                )
+                downloads_after_mv = result_entry.get('success_count', 0)
+                new_from_mv = downloads_after_mv - downloads_before_mv
+                mvid_new_total += new_from_mv
+                if new_from_mv > 0:
+                    self.logger.info(f"Deep scan mvid:{mvid}: {new_from_mv} new downloads")
+                    consecutive_zero_new = 0
+                else:
+                    consecutive_zero_new += 1
+
+                # Early termination: if we've checked many model versions with no new images,
+                # remaining versions are likely fully covered by the bi-directional passes
+                if consecutive_zero_new >= EARLY_STOP_THRESHOLD and i > EARLY_STOP_THRESHOLD:
+                    remaining = len(discovered_mvids) - i
+                    print(f"\nDeep scan: No new images in last {EARLY_STOP_THRESHOLD} model version queries. "
+                          f"Skipping remaining {remaining} versions.")
+                    self.logger.info(f"Deep scan: Early termination after {i} mvid queries "
+                                     f"({consecutive_zero_new} consecutive zero-new). Skipping {remaining} remaining.")
+                    break
+
+            self.deep_scan_stats[username]['modelVersionId_fill'] = mvid_new_total
+            self.logger.info(f"Deep scan modelVersionId fill complete: {mvid_new_total} new downloads total")
+
+        # --- Deep scan sorting (run once at the end) ---
+        if not self.disable_sorting:
+            self.logger.info(f"Running sorting after deep scan for: {target_dir}")
+            await self._sort_images_by_model_name(target_dir)
+
+        # --- Deep scan summary ---
+        total_new = result_entry.get('success_count', 0) - downloads_before
+        print(f"\n{'#'*60}")
+        print(f"DEEP SCAN COMPLETE: {username}")
+        print(f"New images from deep scan: {total_new}")
+        for pass_name, count in self.deep_scan_stats.get(username, {}).items():
+            print(f"  {pass_name}: {count} new downloads")
+        print(f"Total downloaded (all passes): {result_entry.get('success_count', 0)}")
+        print(f"Total API items (all passes): {result_entry.get('api_items', 0)}")
+        print(f"{'#'*60}\n")
+
+        # Update status to reflect deep scan completion
+        result_entry['status'] = 'Completed (Deep Scan)'
+
+    def _run_verification(self, username: str, parent_result_key: str) -> None:
+        """Compares downloaded image count against known website counts for verification.
+
+        Loads website_image_counts.json and prints a completeness report.
+        """
+        result_entry = self.run_results.get(parent_result_key)
+        if not result_entry:
+            return
+
+        # Load website counts data
+        counts_file = os.path.join(self.script_dir, 'website_image_counts.json')
+        if not os.path.exists(counts_file):
+            self.logger.debug(f"No website_image_counts.json found at {counts_file}, skipping verification")
+            return
+
+        try:
+            with open(counts_file, 'r') as f:
+                website_counts = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            self.logger.warning(f"Could not load website_image_counts.json: {e}")
+            return
+
+        if username not in website_counts:
+            return  # No reference data for this user
+
+        user_data = website_counts[username]
+        website_count = user_data.get('website_count', 0)
+        downloaded_count = result_entry.get('success_count', 0) + result_entry.get('skipped_count', 0)
+        api_items = result_entry.get('api_items', 0)
+
+        if website_count == 0:
+            return
+
+        completeness = (api_items / website_count) * 100 if website_count > 0 else 0
+        gap = website_count - api_items
+
+        print(f"\n--- Verification Report: {username} ---")
+        print(f"Website count:  {website_count:>10,}")
+        print(f"API items seen: {api_items:>10,} ({completeness:.1f}%)")
+        print(f"Downloaded:     {downloaded_count:>10,}")
+        print(f"Gap:            {gap:>10,} images")
+        if gap > 0 and completeness < 95:
+            print(f"WARNING: Significant gap detected ({100 - completeness:.1f}% missing).")
+            print(f"         Some images may be inaccessible via any API path.")
+        elif gap > 0:
+            print(f"NOTE: Small gap remaining - images may have been deleted or are private.")
+        else:
+            print(f"SUCCESS: API items meet or exceed website count.")
+        print(f"{'---'*15}\n")
 
     # --- Tag Search Methods ---
     @retry(stop=stop_after_dynamic_attempt(), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
@@ -1345,6 +1559,9 @@ class CivitaiDownloader:
                         mode_name = "Mode 1" if self.mode == '1' else "Mode 4"
                         self.logger.info(f"{mode_name} Tag Filtering: {filter_tags}, Prompt Check: {'Disabled' if disable_prompt_check else 'Enabled'}")
 
+                # Bug #52: Track username download contexts for deep scan
+                username_download_ctx: Dict[str, Dict[str, Any]] = {}  # {username: {target_dir, mode_info, result_key}}
+
                 for idt, ident in identifiers_to_process:
                      result_key = f"{idt}:{ident}"; valid, reason = await self._validate_identifier_basic(ident, idt)
                      if not valid: self.run_results[result_key].update({'status':'Failed (Validation)', 'reason': reason}); continue
@@ -1357,6 +1574,8 @@ class CivitaiDownloader:
                          if filter_tags:
                              tag_to_check = "_".join(filter_tags)
                              mode_info = {'tag_to_check': tag_to_check, 'disable_prompt_check': disable_prompt_check, 'current_tag': None}
+                         # Bug #52: Store context for potential deep scan
+                         username_download_ctx[ident] = {'target_dir': target_dir, 'mode_info': mode_info, 'result_key': result_key}
                      elif idt == 'model': target_dir = os.path.join(option_folder, f"model_{ident}"); url = f"{self.base_url}?modelId={ident}{url_params}"
                      elif idt == 'modelVersion':
                          target_dir = os.path.join(option_folder, f"modelVersion_{ident}")
@@ -1371,11 +1590,31 @@ class CivitaiDownloader:
                 # --- Execute all collected tasks for modes 1, 2, 4 ---
                 if tasks:
                     self.logger.info(f"Executing {len(tasks)} download tasks (Modes 1, 2, 4)...")
-                    # Gather tasks for non-tag modes here
-                    await asyncio.gather(*tasks) # adding return_exceptions=True here too?
+                    await asyncio.gather(*tasks)
                     self.logger.info("Finished gathering non-tag download tasks.")
                 else:
                     self.logger.info("No download tasks were generated for modes 1, 2, or 4.")
+
+                # --- Bug #52: Deep scan for capped username downloads ---
+                if self.mode == '1' and username_download_ctx:
+                    for username, ctx in username_download_ctx.items():
+                        result_entry = self.run_results.get(ctx['result_key'], {})
+                        api_items = result_entry.get('api_items', 0)
+
+                        if api_items >= self.CAP_THRESHOLD:
+                            if self.deep_scan:
+                                self.logger.info(f"Bug #52: Cap detected for {username} ({api_items} items). Starting deep scan...")
+                                await self._run_deep_scan(
+                                    username, ctx['target_dir'], ctx['mode_info'],
+                                    ctx['result_key'], api_items
+                                )
+                            else:
+                                print(f"\nWARNING: {username} appears to have hit the 50K API pagination cap ({api_items} items).")
+                                print(f"         Use --deep_scan to retrieve additional images beyond this limit.")
+                                self.logger.warning(f"Bug #52: Cap detected for {username} ({api_items} items). Use --deep_scan to bypass.")
+
+                        # Bug #52: Run verification for users with known website counts
+                        self._run_verification(username, ctx['result_key'])
 
         except ValueError as ve: # Catch explicit ValueErrors raised during setup
             self.logger.critical(f"Run setup error: {ve}", exc_info=False) # Log as critical, no need for full traceback
@@ -1866,7 +2105,7 @@ class CivitaiDownloader:
         """Logs warnings if CLI arguments conflict with the selected mode."""
         if not self.mode or self.mode not in ['1', '2', '3', '4']: return
         mode = int(self.mode); relevant_args = []; unused_args = []
-        if mode == 1: relevant_args = ['username', 'filter_tags', 'disable_prompt_check']
+        if mode == 1: relevant_args = ['username', 'filter_tags', 'disable_prompt_check', 'deep_scan']
         elif mode == 2: relevant_args = ['model_id']
         elif mode == 3: relevant_args = ['tags', 'disable_prompt_check']
         elif mode == 4: relevant_args = ['model_version_id', 'filter_tags', 'disable_prompt_check']
