@@ -124,6 +124,15 @@ Provide arguments directly on the command line. Unspecified arguments will use t
     ```bash
     python civit_image_downloader.py --mode 1 --username "artist1" --no_videos
     ```
+ *   Download ALL images from a user (50K+ images) using deep scan:
+    ```bash
+    python civit_image_downloader.py --mode 1 --username "serget2" --deep_scan
+    ```   
+
+## Deep Scan (`--deep_scan`)
+
+CivitAI's API caps pagination at ~50,000 images per user. Users with more than 50K images will silently get incomplete downloads. Pass `--deep_scan` to run additional passes that retrieve images beyond this limit using bi-directional pagination and per-model-version queries. Only applies to Mode 1 (username search). Without this flag, the script warns when a user hits the cap.
+
 
 ## Mixed Mode
 
@@ -251,6 +260,63 @@ python migrate_json_to_sqlite.py
 
 
 # Update History
+
+# 2.1 Deep Scan -- 50K API Pagination Cap Bypass (Bug #52)
+
+**New `--deep_scan` flag** for Mode 1 (username search) that retrieves images beyond the CivitAI API's 50K pagination cap.
+
+### The Problem
+
+CivitAI's `/api/v1/images` endpoint uses cursor-based pagination that caps at ~50,000 items (250 pages x 200 items per page). After that, `nextPage` becomes null and pagination silently stops. For users with more than 50K images, this means a standard download only retrieves a fraction of their gallery. A user with 148,208 images would only get ~50,000 without deep scan.
+
+### How Deep Scan Works
+
+Deep scan uses a 5-pass strategy to retrieve images beyond the 50K cap:
+
+| Pass | Strategy | Purpose |
+|------|----------|---------|
+| 1 | `sort=Newest`, `nsfw=X` | Initial pass (NSFW images, newest first) |
+| 2 | `sort=Oldest`, `nsfw=X` | NSFW images from the other end |
+| 3 | `sort=Newest`, no nsfw param | SFW images, newest first |
+| 4 | `sort=Oldest`, no nsfw param | SFW images from the other end |
+| 5 | Per-`modelVersionId` queries | Targeted gap-filling for specific models |
+
+Each pass paginates until the API stops returning results. The SQLite tracking database prevents duplicate downloads across all passes.
+
+Pass 5 collects `modelVersionId` values discovered during passes 1-4 and queries each one individually. This catches images that fall in the "middle" between what Newest and Oldest pagination can reach. It stops after 50 consecutive model versions yield zero new images.
+
+### The SFW/NSFW Split
+
+The API treats NSFW and SFW images as entirely separate pagination streams, each with its own independent 50K cap. This effectively doubles the maximum reachable images to ~200K (100K NSFW + 100K SFW) before model-version fill is needed.
+
+### Realistic Expectations
+
+Coverage depends on how many images the user has and how they're distributed:
+
+| User's Total Images | Expected Coverage | Notes |
+|---------------------|-------------------|-------|
+| 50K - 100K | 90-100% | Bi-directional pagination usually covers everything |
+| 100K - 200K | 60-95% | Depends on SFW/NSFW split and model diversity |
+| 200K - 500K | 30-60% | Middle images may be unreachable via any API path |
+| 500K+ | 10-30% | API limitations make full retrieval unlikely |
+
+The 50K cap is a hard API limitation. Deep scan maximizes what's retrievable but cannot guarantee 100% for very large galleries.
+
+### Usage
+
+```bash
+# Basic deep scan
+python civit_image_downloader.py --mode 1 --username "prolific_user" --deep_scan
+
+# Multiple users -- deep scan applies to all that hit the cap
+python civit_image_downloader.py --mode 1 --username "user1,user2,user3" --deep_scan
+```
+
+Without `--deep_scan`, the script warns when a user hits the cap:
+```
+WARNING: username appears to have hit the 50K API pagination cap (49863 items).
+         Use --deep_scan to retrieve additional images beyond this limit.
+```
 
 ## 2.0 New Features
 
