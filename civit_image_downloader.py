@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python#!/usr/bin/env python
 import httpx
 import os
 import sys
@@ -47,7 +47,8 @@ except ImportError:
 # ===================
 BASE_API_URL: str = "https://civitai.com/api/v1/images"
 MODELS_API_URL: str = "https://civitai.com/api/v1/models"
-ALLOWED_API_HOSTS: frozenset = frozenset({"civitai.com", "www.civitai.com"})
+CIVITAI_WEB_URL: str = "https://civitai.red"
+ALLOWED_API_HOSTS: frozenset = frozenset({"civitai.com", "www.civitai.com", "civitai.red", "www.civitai.red"})
 DEFAULT_HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0", 
     "Content-Type": "application/json"
@@ -56,7 +57,7 @@ DEFAULT_SEMAPHORE_LIMIT: int = 5
 DEFAULT_OUTPUT_DIR: str = "image_downloads"
 DATABASE_FILENAME: str = "tracking_database.sqlite" # <--- SQLite DB filename
 LOG_FILENAME_TEMPLATE: str = "civit_image_downloader_log_{version}.txt"
-SCRIPT_VERSION: str = "1.9"
+SCRIPT_VERSION: str = "2.2"
 DEFAULT_TIMEOUT: int = 60
 DEFAULT_RETRIES: int = 2
 DEFAULT_MAX_PATH_LENGTH: int = 240
@@ -100,6 +101,25 @@ def is_retryable_http_status(exception: BaseException) -> bool:
 
 def should_retry_exception(exception: BaseException) -> bool:
     return isinstance(exception, RETRYABLE_EXCEPTIONS) or is_retryable_http_status(exception)
+
+def return_none_after_retry(retry_state):
+    self_obj = retry_state.args[0] if retry_state.args else None
+    url_or_id = retry_state.args[1] if len(retry_state.args) > 1 else None
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    fn_name = getattr(retry_state.fn, "__name__", "")
+    if self_obj is not None and url_or_id is not None:
+        logger_obj = getattr(self_obj, "logger", retry_logger)
+        logger_obj.error(f"{fn_name} failed after retries for {url_or_id}: {exception}")
+        if fn_name == "_fetch_api_page" and hasattr(self_obj, "failed_urls"):
+            self_obj.failed_urls.append(url_or_id)
+        elif fn_name == "_search_models_by_tag_page" and hasattr(self_obj, "failed_search_requests"):
+            self_obj.failed_search_requests.append(url_or_id)
+    return None
+
+def download_failed_after_retry(retry_state):
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    reason = f"Max retries exceeded: {exception}" if exception else "Max retries exceeded"
+    return False, None, reason
 
 # Custom stop condition that uses global retry count
 class stop_after_dynamic_attempt(stop_base):
@@ -470,8 +490,9 @@ class CivitaiDownloader:
     def _validate_next_page(self, url: Optional[str]) -> Optional[str]:
         """Validates a pagination URL from the API to prevent SSRF attacks.
 
-        Ensures the URL uses HTTPS, belongs to civitai.com, and points to an
-        /api/ path before following it. Rejects anything else.
+        Ensures the URL uses HTTPS, belongs to an allowed CivitAI API host
+        (.com or .red), and points to an /api/ path before following it.
+        Rejects anything else.
         """
         if not url:
             return None
@@ -616,7 +637,8 @@ class CivitaiDownloader:
         stop=stop_after_dynamic_attempt(),
         wait=wait_random_exponential(multiplier=1, max=10),
         retry=retry_if_exception(should_retry_exception),
-        before_sleep=before_sleep_log(retry_logger, logging.WARNING)
+        before_sleep=before_sleep_log(retry_logger, logging.WARNING),
+        retry_error_callback=download_failed_after_retry
     )
     async def download_image(self, image_api_item: Dict[str, Any], base_output_path: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """Downloads a single image or video, detects extension, saves, with retries."""
@@ -639,7 +661,8 @@ class CivitaiDownloader:
             async with self.semaphore:
                 client = await self._get_client()
                 async with client.stream("GET", target_url) as response:
-                    if 400 <= response.status_code < 500: return False, None, f"HTTP Client Error {response.status_code} {response.reason_phrase}" # Not retryable
+                    if 400 <= response.status_code < 500 and response.status_code not in RETRYABLE_STATUS_CODES:
+                        return False, None, f"HTTP Client Error {response.status_code} {response.reason_phrase}" # Not retryable
                     response.raise_for_status() # Raises for >=400. Retry logic catches 5xx.
 
                     # Extension Detection
@@ -705,6 +728,8 @@ class CivitaiDownloader:
             return False, None, reason
 
         except httpx.HTTPStatusError as e:
+            if is_retryable_http_status(e):
+                raise
             reason = f"HTTP Error {e.response.status_code}"
             self.logger.error(f"HTTP error DL {target_url} (final): {e}")
             return False, None, reason
@@ -744,7 +769,7 @@ class CivitaiDownloader:
         content_lines = []; meta_filename_suffix = ""
         if not meta or all(str(v).strip() == '' for v in meta.values()):
              meta_filename_suffix = "_no_meta.txt"
-             content_lines = ["No metadata available.", f"URL: https://civitai.com/images/{image_id}?username={username}"]
+             content_lines = ["No metadata available.", f"URL: {CIVITAI_WEB_URL}/images/{image_id}?username={username}"]
         else:
              meta_filename_suffix = "_meta.txt"
              # Bug #38 fix: Add Model field from baseModel if missing
@@ -779,18 +804,19 @@ class CivitaiDownloader:
         stop=stop_after_dynamic_attempt(),
         wait=wait_random_exponential(multiplier=1, max=10),
         retry=retry_if_exception(should_retry_exception),
-        before_sleep=before_sleep_log(retry_logger, logging.WARNING)
+        before_sleep=before_sleep_log(retry_logger, logging.WARNING),
+        retry_error_callback=return_none_after_retry
     )
     async def _fetch_api_page(self, url: str) -> Optional[Dict[str, Any]]:
         """Fetches a single page from the Civitai images API, with retries."""
         if url in self.visited_api_urls: return None
-        self.visited_api_urls.add(url)
         client = await self._get_client(); self.logger.debug(f"Fetching API page: {url}")
         try:
             async with self.semaphore: response = await client.get(url)
 
             # Handle non-retryable client errors (4xx)
-            if 400 <= response.status_code < 500:
+            if 400 <= response.status_code < 500 and response.status_code not in RETRYABLE_STATUS_CODES:
+                self.visited_api_urls.add(url)
                 if response.status_code == 404: self.logger.warning(f"API request returned 404 Not Found for {url}"); return None
                 else: self.logger.error(f"API Client Error {response.status_code} for {url} (No Retry)"); self.failed_urls.append(url); return None
 
@@ -803,12 +829,15 @@ class CivitaiDownloader:
                      message_msg = data.get('message', '').lower() # Some errors might be in 'message'
                      if 'user not found' in error_msg:
                           self.logger.warning(f"API reported 'User not found' for {url} (Status 500)")
+                          self.visited_api_urls.add(url)
                           return data # <-- Return the data containing the error message
                      if 'model not found' in error_msg or 'model not found' in message_msg:
                           self.logger.warning(f"API reported 'Model not found' for {url} (Status 500)")
+                          self.visited_api_urls.add(url)
                           return data # <-- Return data for model not found
                      if 'version not found' in error_msg or 'version not found' in message_msg:
                           self.logger.warning(f"API reported 'Version not found' for {url} (Status 500)")
+                          self.visited_api_urls.add(url)
                           return data # <-- Return data for version not found
 
                      # If it's a 500 but not a known "not found" error, raise for retry
@@ -826,7 +855,10 @@ class CivitaiDownloader:
             response.raise_for_status()
 
             # Success (2xx)
-            try: return response.json()
+            try:
+                data = response.json()
+                self.visited_api_urls.add(url)
+                return data
             except json.JSONDecodeError as e: self.logger.error(f"JSON Decode Error {url} (Status {response.status_code}): {e}"); self.failed_urls.append(url); return None
 
         # --- Exception Handling (Final/Non-Retryable) ---
@@ -841,6 +873,8 @@ class CivitaiDownloader:
             return None
         
         except httpx.HTTPStatusError as e: # Catches final 5xx or non-retryable HTTP errors raised above
+            if is_retryable_http_status(e):
+                raise
             self.logger.error(f"HTTP error fetch {url} (final): Status {e.response.status_code}")
             self.failed_urls.append(url)
             return None
@@ -849,11 +883,60 @@ class CivitaiDownloader:
             self.logger.critical(f"Unexpected error fetch {url}: {e}", exc_info=True)
             self.failed_urls.append(url)
             return None
+
+    @retry(
+        stop=stop_after_dynamic_attempt(),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        retry=retry_if_exception(should_retry_exception),
+        before_sleep=before_sleep_log(retry_logger, logging.WARNING),
+        retry_error_callback=return_none_after_retry
+    )
+    async def _fetch_model_details(self, model_id: str) -> Optional[Dict[str, Any]]:
+        """Fetches one model record so modelId can be resolved to modelVersionIds."""
+        url = f"{MODELS_API_URL}/{quote(str(model_id), safe='')}"
+        client = await self._get_client()
+        try:
+            async with self.semaphore:
+                response = await client.get(url)
+            if 400 <= response.status_code < 500 and response.status_code not in RETRYABLE_STATUS_CODES:
+                if response.status_code == 404:
+                    self.logger.warning(f"Model not found: {model_id}")
+                    return {"error": "model not found"}
+                self.logger.error(f"Model details Client Error {response.status_code} for {url}")
+                return None
+            response.raise_for_status()
+            return response.json()
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON Decode Error model details {url}: {e}")
+            return None
+        except httpx.HTTPStatusError as e:
+            if is_retryable_http_status(e):
+                raise
+            self.logger.error(f"HTTP error model details {url}: Status {e.response.status_code}")
+            return None
+        except httpx.RequestError as e:
+            self.logger.error(f"Network error model details {url}: {e}")
+            return None
+
+    async def _get_model_versions(self, model_id: str) -> List[Tuple[int, str]]:
+        """Returns (modelVersionId, version name) pairs for a model ID."""
+        data = await self._fetch_model_details(model_id)
+        if not data:
+            return []
+        if 'error' in data:
+            return []
+        versions = []
+        for version in data.get('modelVersions', []):
+            version_id = version.get('id')
+            if isinstance(version_id, int):
+                versions.append((version_id, version.get('name') or f"version_{version_id}"))
+        return versions
         
     # --- Mode Execution Logic ---
     async def _process_api_items(self, items: List[Dict[str, Any]], target_dir: str, mode_specific_info: Optional[Dict] = None, parent_result_key: Optional[str] = None, model_id: Optional[int] = None) -> None:
         """Processes image items: checks skip conditions, creates download tasks."""
         tasks = []; mode_specific_info = mode_specific_info or {}
+        scheduled_per_model: Dict[int, int] = {}
         tag_to_check = mode_specific_info.get('tag_to_check'); disable_prompt_check = mode_specific_info.get('disable_prompt_check', False); current_tag = mode_specific_info.get('current_tag')
         # DEBUG: Log first item structure to understand API response (only if debug enabled)
         if self.logger.isEnabledFor(logging.DEBUG) and items and len(items) > 0:
@@ -892,11 +975,16 @@ class CivitaiDownloader:
                     pass # Simpler: Don't update tags on skipped items via this path.
             # Issue #8: Per-model limit check (tag search mode only)
             if not should_skip and self.max_per_model and self.mode == '3':  # Tag search mode
-                model_version_ids = item.get('modelVersionIds', [])
-                if model_version_ids:
+                if model_id is not None:
+                    current_count = self.per_model_counts.get(model_id, 0) + scheduled_per_model.get(model_id, 0)
+                    if current_count >= self.max_per_model:
+                        skip_reason = f"Per-model limit reached (model {model_id})"; should_skip = True
+                else:
+                    model_version_ids = item.get('modelVersionIds', [])
                     # Check if any of the models for this image have reached their limit
                     for mv_id in model_version_ids:
-                        if self.per_model_counts.get(mv_id, 0) >= self.max_per_model:
+                        current_count = self.per_model_counts.get(mv_id, 0) + scheduled_per_model.get(mv_id, 0)
+                        if current_count >= self.max_per_model:
                             skip_reason = f"Per-model limit reached (model {mv_id})"; should_skip = True
                             break
             # Tag Prompt Check
@@ -912,6 +1000,12 @@ class CivitaiDownloader:
                 continue
             # Create Download Task if not skipped
             tasks.append(self._handle_single_download(item, target_dir, current_tag, parent_result_key, model_id))
+            if self.max_per_model and self.mode == '3':
+                if model_id is not None:
+                    scheduled_per_model[model_id] = scheduled_per_model.get(model_id, 0) + 1
+                else:
+                    for mv_id in item.get('modelVersionIds', []):
+                        scheduled_per_model[mv_id] = scheduled_per_model.get(mv_id, 0) + 1
         if tasks: await asyncio.gather(*tasks) # Run downloads for this batch
 
     async def _handle_single_download(self, item: Dict[str, Any], target_dir: str, current_tag: Optional[str] = None, parent_result_key: Optional[str] = None, model_id: Optional[int] = None) -> None:
@@ -955,9 +1049,12 @@ class CivitaiDownloader:
              # Issue #8: Increment download counters
              self.images_downloaded_count += 1
              if self.mode == '3':  # Tag search mode - track per-model counts
-                 model_version_ids = item.get('modelVersionIds', [])
-                 for mv_id in model_version_ids:
-                     self.per_model_counts[mv_id] = self.per_model_counts.get(mv_id, 0) + 1
+                 if model_id is not None:
+                     self.per_model_counts[model_id] = self.per_model_counts.get(model_id, 0) + 1
+                 else:
+                     model_version_ids = item.get('modelVersionIds', [])
+                     for mv_id in model_version_ids:
+                         self.per_model_counts[mv_id] = self.per_model_counts.get(mv_id, 0) + 1
 
              tags_to_mark = [current_tag] if current_tag else []
              await self.mark_image_as_downloaded(str(image_id), final_image_path, self.quality, tags=tags_to_mark, url=item.get('url'), checkpoint_name=checkpoint_name, context=parent_result_key)
@@ -969,12 +1066,14 @@ class CivitaiDownloader:
              fail_reason = reason or "Download failed"
              self.skipped_reasons_summary[fail_reason] = self.skipped_reasons_summary.get(fail_reason, 0) + 1
 
-    async def _run_paginated_download(self, initial_url: str, target_dir: str, mode_specific_info: Optional[Dict] = None, parent_result_key: Optional[str] = None, model_id: Optional[int] = None, deep_scan_pass: Optional[str] = None) -> int:
+    async def _run_paginated_download(self, initial_url: str, target_dir: str, mode_specific_info: Optional[Dict] = None, parent_result_key: Optional[str] = None, model_id: Optional[int] = None, deep_scan_pass: Optional[str] = None, continuation_pass: Optional[str] = None) -> int:
         """Handles pagination and processing for an identifier, checking for 'Not Found' errors.
 
         Args:
             deep_scan_pass: If set, this is a continuation pass for deep scan (e.g., 'oldest', 'mvid:12345').
                            Skips redownload clearing, adjusts status handling, and skips sorting.
+            continuation_pass: If set, this is a non-deep-scan continuation pass (for example one
+                               model version inside a Model ID download).
 
         Returns:
             Number of API items encountered during this pagination pass.
@@ -983,16 +1082,20 @@ class CivitaiDownloader:
         identifier_reason: Optional[str] = None; identifier_api_items: int = 0
         result_entry = self._get_result_entry(parent_result_key, model_id)
         if not result_entry: self.logger.error(f"Result entry missing for {parent_result_key}/{model_id}"); return 0
+        pass_label = deep_scan_pass or continuation_pass
+        is_continuation_pass = pass_label is not None
 
         # Bug #50 enhancement: Print status message when starting to process an identifier
         identifier_display = parent_result_key if not model_id else f"{parent_result_key} -> model_{model_id}"
         if deep_scan_pass:
             print(f"\n{'-'*60}\nDeep scan pass [{deep_scan_pass}]: {identifier_display}\n{'-'*60}")
+        elif continuation_pass:
+            print(f"\n{'-'*60}\nPass [{continuation_pass}]: {identifier_display}\n{'-'*60}")
         else:
             print(f"\n{'='*60}\nStarting: {identifier_display}\n{'='*60}")
 
         # Issue #58: Clear target history if re-downloading (only on initial pass, not deep scan)
-        if not deep_scan_pass and self.allow_redownload == 1 and parent_result_key and ':' in parent_result_key:
+        if not is_continuation_pass and self.allow_redownload == 1 and parent_result_key and ':' in parent_result_key:
             target_type, target_value = parent_result_key.split(':', 1)
             cleared_count = self.clear_target_history(target_type, target_value)
             if cleared_count > 0:
@@ -1001,7 +1104,7 @@ class CivitaiDownloader:
 
         while url:
              page_count += 1
-             self.logger.info(f"Requesting API page {page_count} for {os.path.basename(target_dir)}{f' [{deep_scan_pass}]' if deep_scan_pass else ''}")
+             self.logger.info(f"Requesting API page {page_count} for {os.path.basename(target_dir)}{f' [{pass_label}]' if pass_label else ''}")
              page_data = await self._fetch_api_page(url) # Retries handled inside
 
              # --- Add Check for Specific "Not Found" Errors on First Page ---
@@ -1021,13 +1124,13 @@ class CivitaiDownloader:
 
                  if not_found:
                       self.logger.warning(f"Identifier not found for {parent_result_key}: {identifier_reason}")
-                      if not deep_scan_pass:
+                      if not is_continuation_pass:
                           identifier_status = 'Failed (Not Found)'
                           result_entry['status'] = identifier_status
                           result_entry['reason'] = identifier_reason
                           print(f"Error for '{parent_result_key}': {identifier_reason}. Please check the identifier.")
                       else:
-                          self.logger.info(f"Deep scan pass [{deep_scan_pass}]: Not found (expected for some model versions)")
+                          self.logger.info(f"Continuation pass [{pass_label}]: Not found")
                       return 0 # Stop processing this pass
              # --- End "Not Found" Check ---
 
@@ -1044,8 +1147,8 @@ class CivitaiDownloader:
                       # Bug #50 enhancement: Print progress update after processing each page
                       current_downloads = result_entry.get('success_count', 0)
                       current_skipped = result_entry.get('skipped_count', 0)
-                      pass_label = f" [{deep_scan_pass}]" if deep_scan_pass else ""
-                      print(f"[{identifier_display}{pass_label}] Page {page_count}: Downloaded {current_downloads} | Skipped {current_skipped} | API items processed: {identifier_api_items}")
+                      display_pass_label = f" [{pass_label}]" if pass_label else ""
+                      print(f"[{identifier_display}{display_pass_label}] Page {page_count}: Downloaded {current_downloads} | Skipped {current_skipped} | API items processed: {identifier_api_items}")
 
                       # Issue #8: Check if image limit reached, stop pagination if so
                       if self.max_images and self.images_downloaded_count >= self.max_images:
@@ -1076,8 +1179,8 @@ class CivitaiDownloader:
                  self.logger.warning(f"Stopping pagination for {os.path.basename(target_dir)}: {fetch_fail_reason}."); break
 
         # Update final status
-        if deep_scan_pass:
-            # For deep scan passes, accumulate api_items without overwriting status
+        if is_continuation_pass:
+            # For continuation passes, accumulate api_items without overwriting status
             result_entry['api_items'] = result_entry.get('api_items', 0) + identifier_api_items
             if model_id is not None and parent_result_key in self.run_results:
                 self.run_results[parent_result_key]['api_items'] += identifier_api_items
@@ -1091,7 +1194,7 @@ class CivitaiDownloader:
                     self.run_results[parent_result_key]['api_items'] += identifier_api_items
 
         # Sorting (skip for deep scan passes - sorting happens once at the end)
-        if not deep_scan_pass and not self.disable_sorting and identifier_status.startswith('Completed'):
+        if not is_continuation_pass and not self.disable_sorting and identifier_status.startswith('Completed'):
             self.logger.info(f"Running sorting for: {target_dir}"); await self._sort_images_by_model_name(target_dir)
 
         # Bug #50 enhancement: Print completion message with summary
@@ -1100,6 +1203,8 @@ class CivitaiDownloader:
         total_api_items = result_entry.get('api_items', 0)
         if deep_scan_pass:
             print(f"{'-'*60}\nDeep scan pass [{deep_scan_pass}] done: +{identifier_api_items} API items | Total: {total_downloads} downloaded, {total_skipped} skipped\n{'-'*60}")
+        elif continuation_pass:
+            print(f"{'-'*60}\nPass [{continuation_pass}] done: +{identifier_api_items} API items | Total: {total_downloads} downloaded, {total_skipped} skipped\n{'-'*60}")
         else:
             print(f"\n{'='*60}\nCompleted: {identifier_display}")
             print(f"Status: {identifier_status}")
@@ -1107,6 +1212,59 @@ class CivitaiDownloader:
             print(f"{'='*60}\n")
 
         return identifier_api_items
+
+    async def _run_model_id_download(self, model_id: str, target_dir: str, parent_result_key: str) -> int:
+        """Downloads all images for a Model ID by resolving its modelVersionIds first."""
+        result_entry = self._get_result_entry(parent_result_key)
+        if not result_entry:
+            return 0
+
+        print(f"\n{'='*60}\nStarting: {parent_result_key}\n{'='*60}")
+
+        if self.allow_redownload == 1 and parent_result_key and ':' in parent_result_key:
+            target_type, target_value = parent_result_key.split(':', 1)
+            cleared_count = self.clear_target_history(target_type, target_value)
+            if cleared_count > 0:
+                print(f"Cleared {cleared_count} previous downloads for {target_type}: {target_value}")
+                self.logger.info(f"Cleared {cleared_count} tracked images before re-downloading {parent_result_key}")
+
+        versions = await self._get_model_versions(model_id)
+        if not versions:
+            result_entry['status'] = 'Failed (No Model Versions Found)'
+            result_entry['reason'] = 'Could not resolve modelId to modelVersionIds'
+            print(f"Error for '{parent_result_key}': Could not resolve model versions.")
+            return 0
+
+        self.logger.info(f"Resolved model {model_id} to {len(versions)} model versions.")
+        total_api_items = 0
+        for version_id, version_name in versions:
+            if self.max_images and self.images_downloaded_count >= self.max_images:
+                break
+            url = f"{self.base_url}?modelVersionId={version_id}&nsfw=X"
+            total_api_items += await self._run_paginated_download(
+                url,
+                target_dir,
+                parent_result_key=parent_result_key,
+                continuation_pass=f"modelVersion:{version_id} ({version_name})"
+            )
+
+        if result_entry.get('status') not in {'Failed (No Model Versions Found)', 'Failed (Not Found)'}:
+            if self.max_images and self.images_downloaded_count >= self.max_images:
+                result_entry['status'] = 'Completed (Limit Reached)'
+            elif result_entry.get('api_items', 0) == 0:
+                result_entry['status'] = 'Completed (No Items Found)'
+            else:
+                result_entry['status'] = 'Completed'
+
+        if not self.disable_sorting and str(result_entry.get('status', '')).startswith('Completed'):
+            self.logger.info(f"Running sorting for: {target_dir}")
+            await self._sort_images_by_model_name(target_dir)
+
+        print(f"\n{'='*60}\nCompleted: {parent_result_key}")
+        print(f"Status: {result_entry.get('status', 'Unknown')}")
+        print(f"Downloaded: {result_entry.get('success_count', 0)} | Skipped: {result_entry.get('skipped_count', 0)} | API items: {result_entry.get('api_items', 0)}")
+        print(f"{'='*60}\n")
+        return total_api_items
 
     # --- Deep Scan Methods (Bug #52) ---
     CAP_THRESHOLD: int = 49000  # If API returns this many items, we likely hit the 50K pagination cap
@@ -1285,24 +1443,25 @@ class CivitaiDownloader:
         print(f"{'---'*15}\n")
 
     # --- Tag Search Methods ---
-    @retry(stop=stop_after_dynamic_attempt(), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING))
+    @retry(stop=stop_after_dynamic_attempt(), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING), retry_error_callback=return_none_after_retry)
     async def _search_models_by_tag_page(self, url: str, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         """Helper: Fetches one page of model search results, with retries."""
         self.logger.debug(f"Fetching models page: {url}")
         async with self.semaphore: response = await client.get(url)
-        if 400 <= response.status_code < 500: self.logger.error(f"Model search Client Error {response.status_code} for {url}"); self.failed_search_requests.append(url); return None
+        if 400 <= response.status_code < 500 and response.status_code not in RETRYABLE_STATUS_CODES:
+            self.logger.error(f"Model search Client Error {response.status_code} for {url}"); self.failed_search_requests.append(url); return None
         response.raise_for_status()
         try: return response.json()
         except json.JSONDecodeError as e: self.logger.error(f"JSON Decode Error model search {url}: {e}"); self.failed_search_requests.append(url); return None
 
-    async def _search_models_by_tag(self, tag_query: str) -> List[Tuple[int, str]]:
+    async def _search_models_by_tag(self, tag_query: str) -> List[Tuple[int, str, int, str]]:
         """
-        Searches for model IDs and names by tag, handling pagination and adding
+        Searches for model version IDs by tag, handling pagination and adding
         validation based on first page results and a maximum page limit.
         """
         url: Optional[str] = f"{MODELS_API_URL}?tag={quote(tag_query, safe='')}&nsfw=True"
-        models_found: List[Tuple[int, str]] = []
-        model_ids_seen: set[int] = set()
+        versions_found: List[Tuple[int, str, int, str]] = []
+        version_ids_seen: set[int] = set()
         MAX_SEARCH_PAGES = 500 # Define the limit as a constant (or make configurable?)
 
         self.logger.info(f"Searching for models with tag: '{tag_query}' (Max pages: {MAX_SEARCH_PAGES})")
@@ -1353,12 +1512,19 @@ class CivitaiDownloader:
                          # --- End First Page Validation ---
 
                          # Process items
-                         new_models = 0
+                         new_versions = 0
                          for model in items:
                              mid = model.get('id'); mname = model.get('name') or f"Unnamed {mid or '?'}"
-                             if isinstance(mid, int) and mid not in model_ids_seen:
-                                 models_found.append((mid, mname)); model_ids_seen.add(mid); new_models += 1
-                         self.logger.debug(f"Found {new_models} new models for '{tag_query}' on page {page_count}.")
+                             if not isinstance(mid, int):
+                                 continue
+                             for version in model.get('modelVersions', []):
+                                 version_id = version.get('id')
+                                 if isinstance(version_id, int) and version_id not in version_ids_seen:
+                                     version_name = version.get('name') or f"version_{version_id}"
+                                     versions_found.append((mid, mname, version_id, version_name))
+                                     version_ids_seen.add(version_id)
+                                     new_versions += 1
+                         self.logger.debug(f"Found {new_versions} new model versions for '{tag_query}' on page {page_count}.")
 
                      # Pagination
                      url = self._validate_next_page(metadata.get('nextPage'))
@@ -1371,8 +1537,8 @@ class CivitaiDownloader:
                  self.logger.error(f"Error processing model search page {url} for '{tag_query}': {e}"); url = None; break
 
         # Return results only if validation passed (implicitly, because we return [] early if it fails)
-        self.logger.info(f"Found {len(models_found)} unique models for tag '{tag_query}' after {page_count} pages.")
-        return models_found # Return whatever was found before limit/error/end
+        self.logger.info(f"Found {len(versions_found)} unique model versions for tag '{tag_query}' after {page_count} pages.")
+        return versions_found # Return whatever was found before limit/error/end
 
     # --- Main Execution Method ---
     async def run(self) -> None:
@@ -1480,10 +1646,10 @@ class CivitaiDownloader:
                      try:
                          # 1. Search for models matching the tag query
                          # This function now returns List[Tuple[int, str]] or []
-                         found_models = await self._search_models_by_tag(tag_query) # Retries handled inside
+                         found_versions = await self._search_models_by_tag(tag_query) # Retries handled inside
 
                          # 2. Handle case where no models are found (or search aborted)
-                         if not found_models:
+                         if not found_versions:
                              self.logger.warning(f"No models found or processed for tag '{tag}'.")
                              # Update status if not already set (e.g., by validation failure in _search..)
                              if self.run_results[result_key]['status'] == 'Pending':                                 
@@ -1493,30 +1659,47 @@ class CivitaiDownloader:
                          # 3. Store model mapping for CSV summary
                          async with self.tag_model_mapping_lock:
                              # Ensure list exists for tag, then extend with found models
-                             self.tag_model_mapping.setdefault(tag, []).extend(found_models)
+                             self.tag_model_mapping.setdefault(tag, []).extend([(model_id, model_name) for model_id, model_name, _, _ in found_versions])
 
                          # 4. Prepare download tasks for found models
                          self.run_results[result_key]['status'] = 'Processing Models'
-                         self.logger.info(f"Found {len(found_models)} models for '{tag}'. Queueing downloads...")
+                         unique_model_count = len({model_id for model_id, _, _, _ in found_versions})
+                         self.logger.info(f"Found {len(found_versions)} model versions across {unique_model_count} models for '{tag}'. Queueing downloads...")
                          tag_to_check = tag if not disable_prompt_check else None # Tag name (with _) for prompt check
 
-                         for model_id, model_name in found_models: # Unpack id and name
-                             self.logger.debug(f"Queueing task for model ID: {model_id} ('{model_name}') under tag '{tag}'")
+                         for model_id, model_name, version_id, version_name in found_versions: # Unpack model and version details
+                             self.logger.debug(f"Queueing task for model ID: {model_id} ('{model_name}'), version ID: {version_id} ('{version_name}') under tag '{tag}'")
                              model_target_dir = os.path.join(tag_dir, f"model_{model_id}")
                              os.makedirs(model_target_dir, exist_ok=True) # Ensure model-specific dir exists
-                             url = f"{self.base_url}?modelId={model_id}&nsfw=X" # Image API endpoint for model
+                             url = f"{self.base_url}?modelVersionId={version_id}&nsfw=X" # Image API endpoint for model version
                              # Prepare info needed by download/processing steps
                              mode_info = {'tag_to_check': tag_to_check, 'disable_prompt_check': disable_prompt_check, 'current_tag': tag }
                              # Append the task (which calls _run_paginated_download) to the list for this tag
-                             tag_tasks.append(self._run_paginated_download(url, model_target_dir, mode_info, parent_result_key=result_key, model_id=model_id))
+                             tag_tasks.append(self._run_paginated_download(url, model_target_dir, mode_info, parent_result_key=result_key, model_id=model_id, continuation_pass=f"modelVersion:{version_id} ({version_name})"))
 
                          # --- 5. Execute Download Tasks for THIS Tag ---
                          self.logger.info(f"Prepared {len(tag_tasks)} download tasks for tag '{tag}'.") # Log count BEFORE gather
                          if tag_tasks:
-                             self.logger.info(f"Executing asyncio.gather for {len(tag_tasks)} tasks (tag '{tag}')...")
-                             # Use return_exceptions=True to catch errors within tasks
-                             results = await asyncio.gather(*tag_tasks, return_exceptions=True)
-                             self.logger.info(f"Finished asyncio.gather for tag '{tag}'.")
+                             if self.max_images or self.max_per_model:
+                                 self.logger.info(f"Executing {len(tag_tasks)} tag tasks sequentially because image limits are active (tag '{tag}').")
+                                 results = []
+                                 stopped_early = False
+                                 for task in tag_tasks:
+                                     if self.max_images and self.images_downloaded_count >= self.max_images:
+                                         task.close()
+                                         stopped_early = True
+                                         continue
+                                     try:
+                                         results.append(await task)
+                                     except Exception as task_err:
+                                         results.append(task_err)
+                                 if stopped_early:
+                                     self.logger.info(f"Stopped remaining tag tasks for '{tag}' after reaching global image limit.")
+                             else:
+                                 self.logger.info(f"Executing asyncio.gather for {len(tag_tasks)} tasks (tag '{tag}')...")
+                                 # Use return_exceptions=True to catch errors within tasks
+                                 results = await asyncio.gather(*tag_tasks, return_exceptions=True)
+                             self.logger.info(f"Finished executing tag tasks for '{tag}'.")
                              # Check results for exceptions
                              for i, result in enumerate(results):
                                  if isinstance(result, Exception):
@@ -1576,7 +1759,9 @@ class CivitaiDownloader:
                              mode_info = {'tag_to_check': tag_to_check, 'disable_prompt_check': disable_prompt_check, 'current_tag': None}
                          # Bug #52: Store context for potential deep scan
                          username_download_ctx[ident] = {'target_dir': target_dir, 'mode_info': mode_info, 'result_key': result_key}
-                     elif idt == 'model': target_dir = os.path.join(option_folder, f"model_{ident}"); url = f"{self.base_url}?modelId={ident}{url_params}"
+                     elif idt == 'model':
+                         target_dir = os.path.join(option_folder, f"model_{ident}")
+                         url = None
                      elif idt == 'modelVersion':
                          target_dir = os.path.join(option_folder, f"modelVersion_{ident}")
                          url = f"{self.base_url}?modelVersionId={ident}{url_params}"
@@ -1585,7 +1770,11 @@ class CivitaiDownloader:
                              # Use first filter tag as the tag to check (combine if multiple)
                              tag_to_check = "_".join(filter_tags)
                              mode_info = {'tag_to_check': tag_to_check, 'disable_prompt_check': disable_prompt_check, 'current_tag': None}
-                     if target_dir and url: os.makedirs(target_dir, exist_ok=True); tasks.append(self._run_paginated_download(url, target_dir, mode_info, parent_result_key=result_key))
+                     if target_dir and idt == 'model':
+                         os.makedirs(target_dir, exist_ok=True)
+                         tasks.append(self._run_model_id_download(ident, target_dir, result_key))
+                     elif target_dir and url:
+                         os.makedirs(target_dir, exist_ok=True); tasks.append(self._run_paginated_download(url, target_dir, mode_info, parent_result_key=result_key))
                      else: self.run_results[result_key].update({'status':'Failed', 'reason':'Internal setup error'})
                 # --- Execute all collected tasks for modes 1, 2, 4 ---
                 if tasks:
@@ -1634,21 +1823,26 @@ class CivitaiDownloader:
         finally:
              # --- 5. Finalization ---
              self.logger.info("Run finalization steps...")
-             final_option_folder = "" # Determine folder for potential CSV summary
-             if self.mode and self.mode in option_folder_map: # Check if mode is valid before getting folder
-                  final_option_folder = os.path.join(self.output_dir, option_folder_map[self.mode])
+             mode_folder_map: Dict[str, str] = {
+                 '1': option_folder_map['username'],
+                 '2': option_folder_map['model'],
+                 '3': option_folder_map['tag'],
+                 '4': option_folder_map['modelVersion'],
+             }
+             final_option_folder = os.path.join(self.output_dir, mode_folder_map[self.mode]) if self.mode in mode_folder_map else ""
 
              # Close HTTP client if open
              if self._client and not self._client.is_closed:
                  await self._client.aclose(); self.logger.info("HTTP Client closed.")
-             # Close DB connection if open
-             if self.db_conn:
-                 try: self.db_conn.close(); self.logger.info("Database connection closed.")
-                 except sqlite3.Error as e: self.logger.error(f"Error closing database connection: {e}")
 
              # Write summaries (only if Mode 3 was run and folder path is valid)
              if self.mode == '3' and final_option_folder:
                  await self._write_tag_summaries(final_option_folder)
+
+             # Close DB connection if open
+             if self.db_conn:
+                 try: self.db_conn.close(); self.logger.info("Database connection closed.")
+                 except sqlite3.Error as e: self.logger.error(f"Error closing database connection: {e}")
 
              # Print final statistics report
              self._print_download_statistics()
