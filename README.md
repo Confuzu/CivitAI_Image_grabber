@@ -126,14 +126,13 @@ Provide arguments directly on the command line. Unspecified arguments will use t
     python civit_image_downloader.py --mode 1 --username "artist1" --no_videos
     ```
 *   Download ALL images from a user (50K+ images) using deep scan:
-    ```bash
+    ```bashhttps://civitai.red/articles/28369/two-front-doors-civitaicom-civitaired-and-whats-next
     python civit_image_downloader.py --mode 1 --username "Artist1" --deep_scan
     ```   
 
 ## Deep Scan
 
 CivitAI's API caps pagination at ~50,000 images per user. Users with more than 50K images will silently get incomplete downloads. Pass `--deep_scan` to run additional passes that retrieve images beyond this limit using bi-directional pagination and per-model-version queries. Only applies to Mode 1 (username search). Without this flag, the script warns when a user hits the cap. For more technical information https://github.com/Confuzu/CivitAI_Image_grabber/tree/main#21-deep-scan----50k-api-pagination-cap-bypass
-
 
 ## Mixed Mode
 
@@ -261,6 +260,11 @@ python migrate_json_to_sqlite.py
 
 
 # Update History
+
+## 2.2 Update 
+
+**Civitai.com / Civitai.red split:**
+- The API is still queried through CivitAI API hosts and now accepts pagination links from both `civitai.com` and `civitai.red`.
 
 ## 2.1 Deep Scan -- 50K API Pagination Cap Bypass
 
