@@ -1,4 +1,4 @@
-# Civit Image grabber 2.2
+# Civit Image grabber 2.3
 
 It downloads all the images and Videos from a provided Username, Model ID or Model TAG from CivitAI. 
 Should the API not spit out all the data for all images then I'm sorry. 
@@ -90,6 +90,7 @@ Provide arguments directly on the command line. Unspecified arguments will use t
 *   `--max_images INT` (Limit total images downloaded, Default: unlimited) 
 *   `--max_per_model INT` (Limit images per model in tag searches, Default: unlimited) 
 *   `--deep_scan` (Enable deep scan for users with 50K+ images, Mode 1 only, Default: False)
+*   `--debug` (opt-in verbose logging. Default runs stay at `INFO` level to keep log files smaller.)
 
 ## Examples
 
@@ -260,6 +261,20 @@ python migrate_json_to_sqlite.py
 
 
 # Update History
+
+
+## 2.3 API Retry Hardening and Deep Scan Recovery
+
+This update focuses on downloads where CivitAI's image API may return temporary DNS/connect/read failures or repeated `500/502/503/504` responses on cursor pages. A single failed cursor page can stop normal pagination early, so API page fetches now use stronger retry handling than regular image downloads.
+If a username download still hits a broken later cursor page after all retries, `--deep_scan` can now run recovery passes instead of stopping with only the partial normal pagination result. Persistent API-side `500` cursor failures can still leave gaps, but the script now retries more aggressively and can recover additional images through alternate scan paths.
+- API page fetches now use at least 10 attempts, even when the normal `--retries` value is lower.
+- DNS, connect, read, timeout, `429`, and `50x` API failures are retried before pagination is stopped.
+- For users with unstable or very large galleries, use `--deep_scan`.<br />
+ **Addresses GitHub Issue:** #69
+
+ **Added `--debug`** for opt-in verbose logging. Default runs stay at `INFO` level to keep log files smaller.
+- For bug reports, add `--debug` and include the generated log file.
+
 
 ## 2.2 Update 
 
