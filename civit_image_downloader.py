@@ -1,4 +1,4 @@
-#!/usr/bin/env python#!/usr/bin/env python
+#!/usr/bin/env python
 import httpx
 import os
 import sys
@@ -15,7 +15,8 @@ import csv
 import sqlite3
 from asyncio import Lock, Semaphore
 import argparse
-from urllib.parse import quote, urlparse
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote, urlencode, urlparse
 from typing import Optional, Tuple, List, Dict, Any, AsyncGenerator
 
 # Color Code
@@ -27,6 +28,7 @@ RESET = "\033[0m"
 try:
     from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log, RetryError
     from tenacity.stop import stop_base
+    from tenacity.wait import wait_base
 except ImportError:
     print("Error: 'tenacity' library not found. Please install it using: pip install tenacity")
     sys.exit(1)
@@ -55,15 +57,19 @@ DEFAULT_HEADERS: Dict[str, str] = {
 }
 DEFAULT_SEMAPHORE_LIMIT: int = 5
 DEFAULT_OUTPUT_DIR: str = "image_downloads"
-DATABASE_FILENAME: str = "tracking_database.sqlite" # <--- SQLite DB filename
+DATABASE_FILENAME: str = "tracking_database.sqlite"
 LOG_FILENAME_TEMPLATE: str = "civit_image_downloader_log_{version}.txt"
 SCRIPT_VERSION: str = "2.2"
 DEFAULT_TIMEOUT: int = 60
-DEFAULT_RETRIES: int = 2
+DEFAULT_RETRIES: int = 5
 DEFAULT_MAX_PATH_LENGTH: int = 240
+IMAGE_API_LIMIT: int = 200
+DEFAULT_API_RETRIES: int = 10
+DEFAULT_API_RETRY_MAX_WAIT: int = 60
 
-# Global retry count (set before creating downloader instance)
+# Global retry counts (set before creating downloader instance)
 CURRENT_RETRY_COUNT: int = DEFAULT_RETRIES
+CURRENT_API_RETRY_COUNT: int = DEFAULT_API_RETRIES
 
 # =======================
 # --- Logging Setup ---
@@ -121,11 +127,44 @@ def download_failed_after_retry(retry_state):
     reason = f"Max retries exceeded: {exception}" if exception else "Max retries exceeded"
     return False, None, reason
 
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Return seconds from a Retry-After header, capped to avoid unbounded sleeps."""
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            now = datetime.now(retry_at.tzinfo) if retry_at.tzinfo else datetime.now()
+            seconds = (retry_at - now).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return min(max(seconds, 0), DEFAULT_API_RETRY_MAX_WAIT)
+
 # Custom stop condition that uses global retry count
 class stop_after_dynamic_attempt(stop_base):
     """Stop after a dynamically determined number of attempts."""
     def __call__(self, retry_state):
         return retry_state.attempt_number > (1 + CURRENT_RETRY_COUNT)
+
+class stop_after_dynamic_api_attempt(stop_base):
+    """Stop API calls after the API retry count, while still honoring higher --retries values."""
+    def __call__(self, retry_state):
+        return retry_state.attempt_number > (1 + max(CURRENT_RETRY_COUNT, CURRENT_API_RETRY_COUNT))
+
+class wait_retry_after_or_exponential(wait_base):
+    """Use Retry-After for 429 responses, otherwise use exponential backoff."""
+    def __init__(self, multiplier: float = 1, max_wait: float = 10):
+        self.fallback_wait = wait_random_exponential(multiplier=multiplier, max=max_wait)
+
+    def __call__(self, retry_state):
+        exception = retry_state.outcome.exception() if retry_state.outcome else None
+        if isinstance(exception, httpx.HTTPStatusError) and exception.response.status_code == 429:
+            retry_after = _parse_retry_after(exception.response.headers.get("Retry-After"))
+            if retry_after is not None:
+                return retry_after
+        return self.fallback_wait(retry_state)
 
 # ===========================
 # --- Argument Parser ---
@@ -133,6 +172,7 @@ class stop_after_dynamic_attempt(stop_base):
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="CivitAI Image Downloader (SQLite Version)", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--debug", action='store_true', help="Enable verbose debug logging.")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="HTTP request timeout (seconds).")
     parser.add_argument("--quality", type=int, choices=[1, 2], help="Image quality: 1=SD, 2=HD.")
     parser.add_argument("--redownload", type=int, choices=[1, 2], default=2, help="Allow re-downloading tracked images: 1=Yes, 2=No.")
@@ -151,8 +191,23 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max_images", type=int, default=None, help="Maximum number of images to download (default: unlimited).")
     parser.add_argument("--max_per_model", type=int, default=None, help="Maximum images per model during tag searches (default: unlimited).")
     parser.add_argument("--no_videos", action='store_true', help="Skip video files, download images only.")
+    parser.add_argument("--videos_only", action='store_true', help="Skip images, download video files only.")
     parser.add_argument("--deep_scan", action='store_true', help="Enable deep scan for users exceeding the 50K API pagination cap. Uses bi-directional pagination and per-model-version queries to retrieve all images.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.no_videos and args.videos_only:
+        parser.error("--no_videos and --videos_only cannot be used together.")
+    return args
+
+def configure_logging(debug: bool = False) -> None:
+    """Adjust logger and handler levels after CLI arguments are known."""
+    level = logging.DEBUG if debug else logging.INFO
+    logger.setLevel(level)
+    retry_logger.setLevel(level)
+    for handler in logger.handlers:
+        if debug and isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.setLevel(logging.INFO)
+        else:
+            handler.setLevel(level)
 
 # ==========================
 # --- Helper Functions ---
@@ -214,8 +269,10 @@ class CivitaiDownloader:
         self.semaphore_limit: int = self._get_semaphore_limit()
         self.disable_sorting: bool = args.no_sort
         self.skip_videos: bool = self._get_skip_videos()
+        self.videos_only: bool = args.videos_only
         self.max_path_length: int = args.max_path
         self.num_retries: int = args.retries
+        self.api_retries: int = max(CURRENT_RETRY_COUNT, CURRENT_API_RETRY_COUNT)
 
         # --- Database Setup ---
         self.script_dir: str = os.path.dirname(os.path.abspath(__file__))
@@ -259,7 +316,7 @@ class CivitaiDownloader:
         self.logger.info(f"--- Initializing Downloader ---")
         self.logger.info(f"Mode: {self.mode}, Quality: {self.quality}, Redownload: {'Yes' if self.allow_redownload == 1 else 'No'}")
         self.logger.info(f"Output Directory: {self.output_dir}")
-        self.logger.info(f"Semaphore Limit: {self.semaphore_limit}, Timeout: {self.timeout}s, Retries Used: {self.num_retries}")
+        self.logger.info(f"Semaphore Limit: {self.semaphore_limit}, Timeout: {self.timeout}s, Download Retries: {self.num_retries}, API Retries: {self.api_retries}")
         self.logger.info(f"Sorting Disabled: {self.disable_sorting}, Max Path Length: {self.max_path_length}")
         self.logger.info(f"Deep Scan: {'Enabled' if self.deep_scan else 'Disabled'}")
         self.logger.info(f"Tracking Database: {self.db_path}")
@@ -317,7 +374,7 @@ class CivitaiDownloader:
                 cursor.execute("ALTER TABLE tracked_images ADD COLUMN target_type TEXT")
                 cursor.execute("ALTER TABLE tracked_images ADD COLUMN target_value TEXT")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracked_images_target ON tracked_images (target_type, target_value)")
-                self.logger.info("✅ Database migration complete: target tracking added")
+                self.logger.info(" Database migration complete: target tracking added")
             else:
                 self.logger.debug("Target tracking columns already exist, skipping migration")
         except sqlite3.Error as e:
@@ -387,6 +444,8 @@ class CivitaiDownloader:
         else: return 'SD' 
 
     def _get_skip_videos(self) -> bool:
+        if self.args.videos_only:
+            return False
         if self.args.no_videos: return True
         elif self._is_interactive_mode():
             inp = input("Skip video files? (y/n) [default: n]: ").strip().lower()
@@ -452,7 +511,7 @@ class CivitaiDownloader:
                         print("Invalid input. Must be positive number.")
                         continue
                     self.logger.info(f"Image limit set to: {val}")
-                    print(f"✅ Will download maximum of {val} images")
+                    print(f" Will download maximum of {val} images")
                     return val
                 except ValueError:
                     print("Invalid input. Must be a number.")
@@ -511,6 +570,17 @@ class CivitaiDownloader:
         except Exception as e:
             self.logger.warning(f"Failed to parse nextPage URL: {e}")
             return None
+
+    def _image_api_url(self, **params: Any) -> str:
+        """Builds CivitAI image API URLs with an explicit max page size.
+
+        The API default is smaller than the documented maximum. Using 200 items
+        per page reduces the number of pagination requests and therefore the
+        chance that transient 50x/DNS failures stop long username runs early.
+        """
+        query_params = {"limit": IMAGE_API_LIMIT}
+        query_params.update({key: value for key, value in params.items() if value is not None})
+        return f"{self.base_url}?{urlencode(query_params)}"
 
     # --- SQLite Tracking Methods ---
     async def check_if_image_downloaded(self, image_id: str, quality: str, context: Optional[str] = None) -> bool:
@@ -635,7 +705,7 @@ class CivitaiDownloader:
         # ===================================
     @retry(
         stop=stop_after_dynamic_attempt(),
-        wait=wait_random_exponential(multiplier=1, max=10),
+        wait=wait_retry_after_or_exponential(multiplier=1, max_wait=10),
         retry=retry_if_exception(should_retry_exception),
         before_sleep=before_sleep_log(retry_logger, logging.WARNING),
         retry_error_callback=download_failed_after_retry
@@ -723,6 +793,8 @@ class CivitaiDownloader:
             return False, None, reason
 
         except httpx.RequestError as e:
+            if isinstance(e, RETRYABLE_EXCEPTIONS):
+                raise
             reason = f"Network error: {e.__class__.__name__}"
             self.logger.error(f"Network error DL {target_url} (final): {e}")
             return False, None, reason
@@ -801,8 +873,8 @@ class CivitaiDownloader:
 
     # --- API Fetching Method ---
     @retry(
-        stop=stop_after_dynamic_attempt(),
-        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_dynamic_api_attempt(),
+        wait=wait_retry_after_or_exponential(multiplier=1, max_wait=10),
         retry=retry_if_exception(should_retry_exception),
         before_sleep=before_sleep_log(retry_logger, logging.WARNING),
         retry_error_callback=return_none_after_retry
@@ -868,6 +940,8 @@ class CivitaiDownloader:
             return None
         
         except httpx.RequestError as e:
+            if isinstance(e, RETRYABLE_EXCEPTIONS):
+                raise
             self.logger.error(f"Network error fetch {url} (final): {e}")
             self.failed_urls.append(url)
             return None
@@ -885,8 +959,8 @@ class CivitaiDownloader:
             return None
 
     @retry(
-        stop=stop_after_dynamic_attempt(),
-        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_dynamic_api_attempt(),
+        wait=wait_retry_after_or_exponential(multiplier=1, max_wait=10),
         retry=retry_if_exception(should_retry_exception),
         before_sleep=before_sleep_log(retry_logger, logging.WARNING),
         retry_error_callback=return_none_after_retry
@@ -915,6 +989,8 @@ class CivitaiDownloader:
             self.logger.error(f"HTTP error model details {url}: Status {e.response.status_code}")
             return None
         except httpx.RequestError as e:
+            if isinstance(e, RETRYABLE_EXCEPTIONS):
+                raise
             self.logger.error(f"Network error model details {url}: {e}")
             return None
 
@@ -967,6 +1043,9 @@ class CivitaiDownloader:
             # Skip videos if --no_videos flag is set
             if self.skip_videos and item.get('type') == 'video':
                 skip_reason = "Video skipped (--no_videos)"; should_skip = True
+            # Skip images when --videos_only flag is set
+            if not should_skip and self.videos_only and item.get('type') != 'video':
+                skip_reason = "Image skipped (--videos_only)"; should_skip = True
             result_entry = self._get_result_entry(parent_result_key, model_id)
             # Redownload Check
             if self.allow_redownload == 2 and await self.check_if_image_downloaded(str(image_id), self.quality, context=parent_result_key):
@@ -1240,7 +1319,7 @@ class CivitaiDownloader:
         for version_id, version_name in versions:
             if self.max_images and self.images_downloaded_count >= self.max_images:
                 break
-            url = f"{self.base_url}?modelVersionId={version_id}&nsfw=X"
+            url = self._image_api_url(modelVersionId=version_id, nsfw="X")
             total_api_items += await self._run_paginated_download(
                 url,
                 target_dir,
@@ -1294,7 +1373,7 @@ class CivitaiDownloader:
 
         # --- Pass 2: sort=Oldest (NSFW) ---
         downloads_before_oldest = result_entry.get('success_count', 0)
-        oldest_url = f"{self.base_url}?username={quote(username, safe='')}&nsfw=X&sort=Oldest"
+        oldest_url = self._image_api_url(username=username, nsfw="X", sort="Oldest")
         self.logger.info(f"Deep scan: Starting sort=Oldest (NSFW) pass for {username}")
         oldest_items = await self._run_paginated_download(
             oldest_url, target_dir, mode_specific_info, parent_result_key,
@@ -1309,7 +1388,7 @@ class CivitaiDownloader:
         # The nsfw=X parameter filters to NSFW content. Without it, the API returns SFW content.
         # Both streams have independent 50K caps, so we must scan both to get all images.
         downloads_before_sfw = result_entry.get('success_count', 0)
-        sfw_newest_url = f"{self.base_url}?username={quote(username, safe='')}&sort=Newest"
+        sfw_newest_url = self._image_api_url(username=username, sort="Newest")
         self.logger.info(f"Deep scan: Starting sort=Newest (SFW) pass for {username}")
         sfw_newest_items = await self._run_paginated_download(
             sfw_newest_url, target_dir, mode_specific_info, parent_result_key,
@@ -1322,7 +1401,7 @@ class CivitaiDownloader:
 
         # --- Pass 4: sort=Oldest (SFW) ---
         downloads_before_sfw_oldest = result_entry.get('success_count', 0)
-        sfw_oldest_url = f"{self.base_url}?username={quote(username, safe='')}&sort=Oldest"
+        sfw_oldest_url = self._image_api_url(username=username, sort="Oldest")
         self.logger.info(f"Deep scan: Starting sort=Oldest (SFW) pass for {username}")
         sfw_oldest_items = await self._run_paginated_download(
             sfw_oldest_url, target_dir, mode_specific_info, parent_result_key,
@@ -1346,7 +1425,7 @@ class CivitaiDownloader:
             for i, mvid in enumerate(discovered_mvids, 1):
                 downloads_before_mv = result_entry.get('success_count', 0)
                 # Query WITHOUT nsfw param to get both SFW and NSFW per model version
-                mv_url = f"{self.base_url}?username={quote(username, safe='')}&modelVersionId={mvid}&sort=Newest"
+                mv_url = self._image_api_url(username=username, modelVersionId=mvid, sort="Newest")
                 mv_items = await self._run_paginated_download(
                     mv_url, target_dir, mode_specific_info, parent_result_key,
                     deep_scan_pass=f"mvid:{mvid} ({i}/{len(discovered_mvids)})"
@@ -1443,7 +1522,7 @@ class CivitaiDownloader:
         print(f"{'---'*15}\n")
 
     # --- Tag Search Methods ---
-    @retry(stop=stop_after_dynamic_attempt(), wait=wait_random_exponential(multiplier=1, max=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING), retry_error_callback=return_none_after_retry)
+    @retry(stop=stop_after_dynamic_api_attempt(), wait=wait_retry_after_or_exponential(multiplier=1, max_wait=10), retry=retry_if_exception(should_retry_exception), before_sleep=before_sleep_log(retry_logger, logging.WARNING), retry_error_callback=return_none_after_retry)
     async def _search_models_by_tag_page(self, url: str, client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         """Helper: Fetches one page of model search results, with retries."""
         self.logger.debug(f"Fetching models page: {url}")
@@ -1671,7 +1750,7 @@ class CivitaiDownloader:
                              self.logger.debug(f"Queueing task for model ID: {model_id} ('{model_name}'), version ID: {version_id} ('{version_name}') under tag '{tag}'")
                              model_target_dir = os.path.join(tag_dir, f"model_{model_id}")
                              os.makedirs(model_target_dir, exist_ok=True) # Ensure model-specific dir exists
-                             url = f"{self.base_url}?modelVersionId={version_id}&nsfw=X" # Image API endpoint for model version
+                             url = self._image_api_url(modelVersionId=version_id, nsfw="X") # Image API endpoint for model version
                              # Prepare info needed by download/processing steps
                              mode_info = {'tag_to_check': tag_to_check, 'disable_prompt_check': disable_prompt_check, 'current_tag': tag }
                              # Append the task (which calls _run_paginated_download) to the list for this tag
@@ -1749,10 +1828,9 @@ class CivitaiDownloader:
                      result_key = f"{idt}:{ident}"; valid, reason = await self._validate_identifier_basic(ident, idt)
                      if not valid: self.run_results[result_key].update({'status':'Failed (Validation)', 'reason': reason}); continue
                      target_dir, url, mode_info = "", "", None
-                     url_params = f"&nsfw=X&sort=Newest" if idt == 'username' else "&nsfw=X"
                      if idt == 'username':
                          target_dir = os.path.join(option_folder, self._clean_path_component(ident))
-                         url = f"{self.base_url}?username={quote(ident, safe='')}{url_params}"
+                         url = self._image_api_url(username=ident, nsfw="X", sort="Newest")
                          # Issue #41: Apply filter tags for Mode 1 if provided
                          if filter_tags:
                              tag_to_check = "_".join(filter_tags)
@@ -1764,7 +1842,7 @@ class CivitaiDownloader:
                          url = None
                      elif idt == 'modelVersion':
                          target_dir = os.path.join(option_folder, f"modelVersion_{ident}")
-                         url = f"{self.base_url}?modelVersionId={ident}{url_params}"
+                         url = self._image_api_url(modelVersionId=ident, nsfw="X")
                          # Apply filter tags for Mode 4 if provided
                          if filter_tags:
                              # Use first filter tag as the tag to check (combine if multiple)
@@ -1789,18 +1867,28 @@ class CivitaiDownloader:
                     for username, ctx in username_download_ctx.items():
                         result_entry = self.run_results.get(ctx['result_key'], {})
                         api_items = result_entry.get('api_items', 0)
+                        status = str(result_entry.get('status', ''))
+                        fetch_error = status.startswith('Completed (Fetch Error')
 
-                        if api_items >= self.CAP_THRESHOLD:
+                        if api_items >= self.CAP_THRESHOLD or fetch_error:
                             if self.deep_scan:
-                                self.logger.info(f"Bug #52: Cap detected for {username} ({api_items} items). Starting deep scan...")
+                                reason = "pagination fetch error" if fetch_error else "50K pagination cap"
+                                self.logger.info(f"Deep scan recovery for {username}: {reason} detected after {api_items} API items.")
                                 await self._run_deep_scan(
                                     username, ctx['target_dir'], ctx['mode_info'],
                                     ctx['result_key'], api_items
                                 )
+                                if fetch_error:
+                                    result_entry['status'] = 'Completed (Fetch Error; Deep Scan Recovery Run)'
                             else:
-                                print(f"\nWARNING: {username} appears to have hit the 50K API pagination cap ({api_items} items).")
-                                print(f"         Use --deep_scan to retrieve additional images beyond this limit.")
-                                self.logger.warning(f"Bug #52: Cap detected for {username} ({api_items} items). Use --deep_scan to bypass.")
+                                if fetch_error:
+                                    print(f"\nWARNING: {username} stopped early after an API page fetch error ({api_items} items processed).")
+                                    print("         Use --deep_scan to run additional recovery passes, or rerun later when the API is stable.")
+                                    self.logger.warning(f"Pagination fetch error for {username} after {api_items} items. Use --deep_scan for recovery passes.")
+                                else:
+                                    print(f"\nWARNING: {username} appears to have hit the 50K API pagination cap ({api_items} items).")
+                                    print(f"         Use --deep_scan to retrieve additional images beyond this limit.")
+                                    self.logger.warning(f"Bug #52: Cap detected for {username} ({api_items} items). Use --deep_scan to bypass.")
 
                         # Bug #52: Run verification for users with known website counts
                         self._run_verification(username, ctx['result_key'])
@@ -2562,8 +2650,11 @@ class CivitaiDownloader:
 # ===================
 if __name__ == "__main__":
     cli_args = parse_arguments()
-    # Set global retry count from args before creating downloader
+    configure_logging(cli_args.debug)
+    # Set global retry counts from args before creating downloader.
+    # API page fetches get a higher floor because one failed page breaks cursor pagination.
     CURRENT_RETRY_COUNT = cli_args.retries
+    CURRENT_API_RETRY_COUNT = max(cli_args.retries, DEFAULT_API_RETRIES)
     is_cli = cli_args.mode is not None
     print(f"--- Civitai Downloader v{SCRIPT_VERSION} ---")
     print(f"Running in {'command-line' if is_cli else 'interactive'} mode.")
