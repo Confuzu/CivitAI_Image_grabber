@@ -85,6 +85,7 @@ Provide arguments directly on the command line. Unspecified arguments will use t
 *   `--semaphore_limit INT` (Default: 5)
 *   `--no_sort` (Disables model subfolder sorting, Default: False/Sorting enabled)
 *   `--no_videos` (Skip video files, download images only, Default: False)
+*   `--videos_only`  (Skip images, download video files only. Default: False)
 *   `--max_path INT` (Default: 240)
 *   `--retries INT` (Default: 2)
 *   `--max_images INT` (Limit total images downloaded, Default: unlimited) 
@@ -263,7 +264,7 @@ python migrate_json_to_sqlite.py
 # Update History
 
 
-## 2.3 API Retry Hardening and Deep Scan Recovery
+## 2.3 API Retry Hardening, Deep Scan Recovery and `videos_only`
 
 This update focuses on downloads where CivitAI's image API may return temporary DNS/connect/read failures or repeated `500/502/503/504` responses on cursor pages. A single failed cursor page can stop normal pagination early, so API page fetches now use stronger retry handling than regular image downloads.
 If a username download still hits a broken later cursor page after all retries, `--deep_scan` can now run recovery passes instead of stopping with only the partial normal pagination result. Persistent API-side `500` cursor failures can still leave gaps, but the script now retries more aggressively and can recover additional images through alternate scan paths.
@@ -275,6 +276,7 @@ If a username download still hits a broken later cursor page after all retries, 
  **Added `--debug`** for opt-in verbose logging. Default runs stay at `INFO` level to keep log files smaller.
 - For bug reports, add `--debug` and include the generated log file.
 
+`videos_only`  (Skip images, download video files only. Default: False)
 
 ## 2.2 Update 
 
